@@ -1,0 +1,8 @@
+python-interpreter-path = ".venv/bin/python"
+search-path = [
+    "WM_COMMON/src",
+    "WM_Central/src",
+    "WM_FO/src",
+    "WM_WS/WM_WS_E/src",
+    "WM_WS/WM_WS_M/src",
+]

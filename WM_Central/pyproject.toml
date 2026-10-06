@@ -1,0 +1,18 @@
+[project]
+name = "wm-central"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.12"
+dependencies = [
+    "wm-common",
+]
+
+[project.scripts]
+WM_Central = "wm_central:main"
+
+[build-system]
+requires = ["uv_build>=0.12.23,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+wm-common = { workspace = true }

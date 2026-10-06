@@ -1,0 +1,14 @@
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.10",
+]
+
+[tool.uv.workspace]
+members = [
+    "WM_COMMON",
+    "WM_Central",
+    "WM_FO",
+    "WM_WS/WM_WS_E",
+    "WM_WS/WM_WS_M",
+]
