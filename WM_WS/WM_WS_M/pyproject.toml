@@ -8,7 +8,7 @@ dependencies = [
 ]
 
 [project.scripts]
-wm-ws-m = "wm_ws_m:main"
+WM_WS_M = "wm_ws_m:main"
 
 [build-system]
 requires = ["uv_build>=0.12.23,<0.13.0"]
