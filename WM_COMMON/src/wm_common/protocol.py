@@ -3,6 +3,10 @@ import socket
 
 STX = 0x02  # Start of TeXt: "a message begins here"
 ETX = 0x03  # End of TeXt: "the data ends here"
+ACK = 0x06  # ACKnowledge: "frame received correctly"
+NACK = 0x15  # Negative ACKnowledge: "frame was corrupted, send it again"
+
+MAX_RETRIES = 3
 
 
 def lrc(data: bytes) -> int:
@@ -39,3 +43,26 @@ def recv_frame(sock: socket.socket) -> tuple[str, bool]:
     # 3. the byte after ETX is the LRC the sender calculated
     received_lrc = _recv_byte(sock)
     return data.decode(), received_lrc == lrc(bytes(data))
+
+
+def send_msg(sock: socket.socket, text: str) -> None:
+    """Send a frame and wait for ACK. On NACK resend, up to MAX_RETRIES times."""
+    frame = encode_frame(text)
+    for _ in range(MAX_RETRIES):
+        sock.sendall(frame)
+        answer = _recv_byte(sock)
+        if answer == ACK:
+            return
+        if answer != NACK:
+            raise ConnectionError(f"expected ACK/NACK, got byte {answer:#04x}")
+    raise ConnectionError(f"message rejected {MAX_RETRIES} times: {text!r}")
+
+
+def recv_msg(sock: socket.socket) -> str:
+    """Receive frames until one has a correct LRC; ACK it and return its text."""
+    while True:
+        text, ok = recv_frame(sock)
+        if ok:
+            sock.sendall(bytes([ACK]))
+            return text
+        sock.sendall(bytes([NACK]))  # corrupted: ask the sender to repeat
