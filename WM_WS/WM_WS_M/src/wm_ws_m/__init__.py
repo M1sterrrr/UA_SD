@@ -1,5 +1,6 @@
 import argparse
 import socket
+import sys
 import time
 
 from wm_common.cli import host_port
@@ -7,6 +8,22 @@ from wm_common.messages import Message, OpCode, recv, send
 
 HEALTH_INTERVAL = 1.0  # seconds between health checks (PDF: every second)
 HEALTH_TIMEOUT = 3.0   # seconds without an answer before we consider the engine dead
+AUTH_TIMEOUT = 5.0     # seconds to connect to and get an answer from Central
+
+
+def authenticate(central_addr: tuple[str, int], ws_id: str) -> socket.socket:
+    """Connect to CENTRAL and send AUTH#<ws_id>. Exits the program if rejected."""
+    try:
+        central = socket.create_connection(central_addr, timeout=AUTH_TIMEOUT)
+        send(central, Message(OpCode.AUTH, [ws_id]))
+        reply = recv(central)
+        central.settimeout(None)
+    except (OSError, ValueError) as e:  # refused, timed out, or not our protocol
+        sys.exit(f"[WM_WS_M] cannot reach Central at {central_addr}: {e}")
+    if reply.op != OpCode.OK:
+        sys.exit(f"[WM_WS_M] Central rejected station {ws_id}: {reply.fields}")
+    print(f"[WM_WS_M] authenticated with Central, location: {reply.fields[0]}")
+    return central
 
 
 def check_engine(conn: socket.socket) -> bool:
@@ -31,8 +48,8 @@ def watch_engine(conn: socket.socket, healthy: bool | None) -> bool:
         while True:
             try:
                 ok = check_engine(conn)
-            except (ConnectionError, TimeoutError) as e:
-                print(f"[WM_WS_M] engine not responding ({e})")
+            except (ConnectionError, TimeoutError, ValueError) as e:
+                print(f"[WM_WS_M] engine not responding correctly ({e})")
                 return update_health(healthy, False)
             healthy = update_health(healthy, ok)
             time.sleep(HEALTH_INTERVAL)
@@ -44,6 +61,8 @@ def main() -> None:
     parser.add_argument("central", type=host_port, help="WM_Central HOST:PORT")
     parser.add_argument("ws_id", help="ID of this watering station")
     args = parser.parse_args()
+
+    central = authenticate(args.central, args.ws_id)  # kept open: Central sees us as connected
 
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

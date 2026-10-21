@@ -1,5 +1,6 @@
 import argparse
 
+from wm_central import db, server
 from wm_common.cli import host_port
 
 
@@ -9,5 +10,11 @@ def main() -> None:
     parser.add_argument("broker", type=host_port, help="Kafka bootstrap server HOST:PORT")
     args = parser.parse_args()
 
-    print(f"[WM_Central] listening port for monitors: {args.port}")
-    print(f"[WM_Central] Kafka broker: {args.broker}")
+    conn = db.connect()
+    stations = db.list_stations(conn)
+    conn.close()
+    print(f"[WM_Central] database {db.DB_PATH}: {len(stations)} registered stations")
+    for s in stations:
+        print(f"[WM_Central]   {s['id']}  {s['location']}")
+
+    server.serve(args.port)
