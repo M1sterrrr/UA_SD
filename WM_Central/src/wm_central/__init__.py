@@ -1,6 +1,7 @@
 import argparse
 
 from wm_central import db, server
+from wm_central.stations import StationTable
 from wm_common.cli import host_port
 
 
@@ -11,10 +12,9 @@ def main() -> None:
     args = parser.parse_args()
 
     conn = db.connect()
-    stations = db.list_stations(conn)
+    table = StationTable(db.list_stations(conn))
     conn.close()
-    print(f"[WM_Central] database {db.DB_PATH}: {len(stations)} registered stations")
-    for s in stations:
-        print(f"[WM_Central]   {s['id']}  {s['location']}")
+    print(f"[WM_Central] database {db.DB_PATH} loaded")
+    table.print_table()
 
-    server.serve(args.port)
+    server.serve(args.port, table)
