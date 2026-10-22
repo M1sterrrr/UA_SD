@@ -32,6 +32,20 @@ def authenticate(conn: socket.socket) -> sqlite3.Row | None:
     return station
 
 
+REPORT_STATES = {
+    OpCode.LEAK: WSState.LEAK,
+    OpCode.RECOVERED: WSState.AVAILABLE,
+}
+
+
+def handle_report(msg: Message, ws_id: str, table: StationTable) -> Message:
+    """Apply one message from an authenticated monitor. Returns the reply to send."""
+    if msg.op not in REPORT_STATES or msg.fields != [ws_id]:
+        return Message(OpCode.KO, ["unexpected message"])
+    table.set_state(ws_id, REPORT_STATES[msg.op])
+    return Message(OpCode.OK)
+
+
 def handle_monitor(conn: socket.socket, addr: tuple, table: StationTable) -> None:
     """Runs in its own thread for the whole life of one monitor connection."""
     with conn:
@@ -54,7 +68,7 @@ def handle_monitor(conn: socket.socket, addr: tuple, table: StationTable) -> Non
                 while True:
                     msg = recv(conn)
                     print(f"[WM_Central] {ws_id}: {msg.to_text()}")
-                    send(conn, Message(OpCode.OK))
+                    send(conn, handle_report(msg, ws_id, table))
             finally:
                 table.set_state(ws_id, WSState.DISCONNECTED)
         except (ConnectionError, TimeoutError, ValueError) as e:
