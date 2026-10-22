@@ -16,6 +16,7 @@ class OpCode(StrEnum):
     LEAK = "LEAK"            # LEAK#<ws_id>          "my station has a fault"
     RECOVERED = "RECOVERED"  # RECOVERED#<ws_id>     "the fault is fixed"
     # WM_WS_M -> WM_WS_E
+    IDENTIFY = "IDENTIFY"    # IDENTIFY#<ws_id>#<location>   "this is who you are"
     HEALTH = "HEALTH"        # HEALTH                "are you OK?"
     # Replies (any direction)
     OK = "OK"                # OK[#<info>]

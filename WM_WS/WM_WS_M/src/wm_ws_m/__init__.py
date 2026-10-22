@@ -11,8 +11,9 @@ HEALTH_TIMEOUT = 3.0   # seconds without an answer before we consider the engine
 AUTH_TIMEOUT = 5.0     # seconds to connect to and get an answer from Central
 
 
-def authenticate(central_addr: tuple[str, int], ws_id: str) -> socket.socket:
-    """Connect to CENTRAL and send AUTH#<ws_id>. Exits the program if rejected."""
+def authenticate(central_addr: tuple[str, int], ws_id: str) -> tuple[socket.socket, str]:
+    """Connect to CENTRAL and send AUTH#<ws_id>. Returns (socket, location).
+    Exits the program if rejected."""
     try:
         central = socket.create_connection(central_addr, timeout=AUTH_TIMEOUT)
         send(central, Message(OpCode.AUTH, [ws_id]))
@@ -22,8 +23,9 @@ def authenticate(central_addr: tuple[str, int], ws_id: str) -> socket.socket:
         sys.exit(f"[WM_WS_M] cannot reach Central at {central_addr}: {e}")
     if reply.op != OpCode.OK:
         sys.exit(f"[WM_WS_M] Central rejected station {ws_id}: {reply.fields}")
-    print(f"[WM_WS_M] authenticated with Central, location: {reply.fields[0]}")
-    return central
+    location = reply.fields[0]
+    print(f"[WM_WS_M] authenticated with Central, location: {location}")
+    return central, location
 
 
 def check_engine(conn: socket.socket) -> bool:
@@ -46,11 +48,9 @@ def report(central: socket.socket, op: OpCode, ws_id: str) -> None:
 
 def update_health(old: bool | None, new: bool, central: socket.socket, ws_id: str) -> bool:
     """Act only when the health CHANGES. None = no engine seen yet."""
-    if new and old is None:
-        print("[WM_WS_M] engine OK")
-    elif new and old is False:
-        print("[WM_WS_M] RECOVERED: engine OK again")
-        report(central, OpCode.RECOVERED, ws_id)
+    if new and old is not True:  # first OK ever, or OK after a fault
+        print("[WM_WS_M] engine OK" if old is None else "[WM_WS_M] RECOVERED: engine OK again")
+        report(central, OpCode.RECOVERED, ws_id)  # Central marks us AVAILABLE
     elif not new and old is not False:
         print("[WM_WS_M] LEAK detected!")
         report(central, OpCode.LEAK, ws_id)
@@ -58,17 +58,20 @@ def update_health(old: bool | None, new: bool, central: socket.socket, ws_id: st
 
 
 def watch_engine(conn: socket.socket, healthy: bool | None,
-                 central: socket.socket, ws_id: str) -> bool:
-    """Health-check one engine every second until its connection breaks."""
+                 central: socket.socket, ws_id: str, location: str) -> bool:
+    """Tell the engine who it is, then health-check it every second
+    until its connection breaks."""
     with conn:
-        while True:
-            try:
+        try:
+            send(conn, Message(OpCode.IDENTIFY, [ws_id, location]))
+            recv(conn)  # the engine's OK
+            while True:
                 ok = check_engine(conn)
-            except (ConnectionError, TimeoutError, ValueError) as e:
-                print(f"[WM_WS_M] engine not responding correctly ({e})")
-                return update_health(healthy, False, central, ws_id)
-            healthy = update_health(healthy, ok, central, ws_id)
-            time.sleep(HEALTH_INTERVAL)
+                healthy = update_health(healthy, ok, central, ws_id)
+                time.sleep(HEALTH_INTERVAL)
+        except (ConnectionError, TimeoutError, ValueError) as e:
+            print(f"[WM_WS_M] engine not responding correctly ({e})")
+            return update_health(healthy, False, central, ws_id)
 
 
 def main() -> None:
@@ -78,7 +81,7 @@ def main() -> None:
     parser.add_argument("ws_id", help="ID of this watering station")
     args = parser.parse_args()
 
-    central = authenticate(args.central, args.ws_id)  # kept open: used to report LEAK/RECOVERED
+    central, location = authenticate(args.central, args.ws_id)  # socket kept open for reports
 
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -91,4 +94,4 @@ def main() -> None:
         conn, addr = server.accept()
         conn.settimeout(HEALTH_TIMEOUT)
         print(f"[WM_WS_M] engine connected from {addr}")
-        healthy = watch_engine(conn, healthy, central, args.ws_id)
+        healthy = watch_engine(conn, healthy, central, args.ws_id, location)

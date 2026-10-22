@@ -22,12 +22,14 @@ class StationTable:
         self._stations = {r["id"]: Station(r["id"], r["location"]) for r in rows}
 
     def connect(self, ws_id: str, location: str) -> bool:
-        """Mark a station as connected. False if it is already connected."""
+        """Mark a station as connected. False if it is already connected.
+        It starts as LEAK: its engine has not answered yet. The monitor sends
+        RECOVERED once the engine's first health check is OK."""
         with self._lock:
             current = self._stations.get(ws_id)
             if current is not None and current.state != WSState.DISCONNECTED:
                 return False
-            self._stations[ws_id] = Station(ws_id, location, WSState.AVAILABLE)
+            self._stations[ws_id] = Station(ws_id, location, WSState.LEAK)
         self.print_table()
         return True
 

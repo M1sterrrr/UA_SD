@@ -33,11 +33,18 @@ def main() -> None:
 
     sock = socket.create_connection(args.monitor)
     print(f"[WM_WS_E] connected to monitor at {args.monitor}")
+    ws_id = None  # unknown until the monitor tells us (IDENTIFY)
     try:
         while True:
             msg = recv(sock)
-            if msg.op == OpCode.HEALTH:
+            if msg.op == OpCode.IDENTIFY:
+                ws_id, location = msg.fields
+                print(f"[WM_WS_E] I am station {ws_id} ({location})")
+                send(sock, Message(OpCode.OK))
+            elif msg.op == OpCode.HEALTH:
                 send(sock, Message(OpCode.KO if fault.is_set() else OpCode.OK))
+            else:
+                send(sock, Message(OpCode.KO, ["unknown request"]))
     except ConnectionError:
         print("[WM_WS_E] monitor closed the connection")
     finally:
