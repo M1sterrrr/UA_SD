@@ -22,7 +22,8 @@ import time
 import uuid
 from enum import StrEnum
 
-from confluent_kafka import Consumer, Producer
+from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
+from confluent_kafka.admin import AdminClient, NewTopic
 
 REQUESTS = "wm.requests"
 WS_COMMANDS = "wm.ws.commands"
@@ -44,6 +45,14 @@ class MsgType(StrEnum):
     # wm.fo.notifications
     REQUEST_STATUS = "REQUEST_STATUS"          # request_id, operator_id, ws_id, status, reason
     STATIONS = "STATIONS"                      # stations: [{id, location, state}, ...]
+
+
+class Status(StrEnum):
+    """The "status" field of REQUEST_STATUS."""
+
+    RECEIVED = "RECEIVED"      # Central got the request and is checking it
+    AUTHORIZED = "AUTHORIZED"  # all checks passed
+    DENIED = "DENIED"          # a check failed; "reason" says which
 
 
 def encode(msg_type: MsgType, **fields) -> bytes:
@@ -68,10 +77,26 @@ def make_producer(broker: tuple[str, int]) -> Producer:
     return Producer({"bootstrap.servers": f"{host}:{port}"})
 
 
+def ensure_topics(broker: tuple[str, int]) -> None:
+    """Create our topics if they don't exist yet. A consumer can't subscribe to a
+    topic that was never created (only producers create topics automatically)."""
+    host, port = broker
+    admin = AdminClient({"bootstrap.servers": f"{host}:{port}"})
+    wanted = [NewTopic(t, num_partitions=1, replication_factor=1)
+              for t in (REQUESTS, WS_COMMANDS, WS_EVENTS, FO_NOTIFICATIONS)]
+    for future in admin.create_topics(wanted).values():
+        try:
+            future.result()  # wait for the broker's answer
+        except KafkaException as e:
+            if e.args[0].code() != KafkaError.TOPIC_ALREADY_EXISTS:
+                raise
+
+
 def make_consumer(broker: tuple[str, int], name: str, topics: list[str],
                   timeout: float = 15.0) -> Consumer:
     """Consumer in a fresh group that only sees messages produced from now on.
     Returns once the broker has actually assigned the topics to it."""
+    ensure_topics(broker)
     host, port = broker
     consumer = Consumer({
         "bootstrap.servers": f"{host}:{port}",

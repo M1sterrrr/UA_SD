@@ -33,6 +33,12 @@ class StationTable:
         self.print_table()
         return True
 
+    def get_state(self, ws_id: str) -> WSState | None:
+        """Current state of a station, or None if Central doesn't know it."""
+        with self._lock:
+            station = self._stations.get(ws_id)
+            return station.state if station else None
+
     def set_state(self, ws_id: str, state: WSState) -> None:
         with self._lock:
             self._stations[ws_id].state = state

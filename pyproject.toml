@@ -12,3 +12,7 @@ members = [
     "WM_WS/WM_WS_E",
     "WM_WS/WM_WS_M",
 ]
+
+[tool.ruff.lint.isort]
+# Our own workspace packages: always sorted as first-party, after third-party ones
+known-first-party = ["wm_common", "wm_central", "wm_fo", "wm_ws_e", "wm_ws_m"]

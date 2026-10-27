@@ -1,9 +1,10 @@
 import argparse
 import threading
 
-from wm_common.cli import host_port
 from wm_central import db, kafka_handler, server
 from wm_central.stations import StationTable
+from wm_common import kafka_msgs as km
+from wm_common.cli import host_port
 
 
 def main() -> None:
@@ -20,8 +21,11 @@ def main() -> None:
     print(f"[WM_Central] database {db.DB_PATH} loaded")
     table.print_table()
 
+    # One producer for the whole of Central (confluent-kafka producers are thread-safe)
+    producer = km.make_producer(args.broker)
+
     # Two jobs at once: Kafka in a background thread, sockets in the main thread
     threading.Thread(
-        target=kafka_handler.consume, args=(args.broker, table), daemon=True
+        target=kafka_handler.consume, args=(args.broker, table, producer), daemon=True
     ).start()
     server.serve(args.port, table)
