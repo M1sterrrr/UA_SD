@@ -1,0 +1,89 @@
+"""Kafka side of the protocol: topics, message types, JSON encoding, client setup.
+
+Topic               Key          Producer        Consumer            Message types
+------------------  -----------  --------------  ------------------  ----------------------------
+wm.requests         ws_id        WM_FO, WM_WS_E  WM_Central          IRRIGATION_REQUEST
+wm.ws.commands      ws_id        WM_Central      WM_WS_E             START, STOP, BLOCK, ACTIVATE
+wm.ws.events        ws_id        WM_WS_E         WM_Central, WM_FO   TELEMETRY, FINISHED
+wm.fo.notifications operator_id  WM_Central      WM_FO               REQUEST_STATUS, STATIONS
+
+The FO reads wm.ws.events directly and keeps only events with its own request_id.
+If an engine cannot start (fault), it answers START with FINISHED (reason LEAK) at once.
+
+Every message value is a JSON object with a "type" field, e.g.
+    {"type": "IRRIGATION_REQUEST", "request_id": "a1b2", "operator_id": "OP1",
+     "ws_id": "WS2", "duration": 30}
+
+Consumers only care about LIVE messages: each run joins a brand-new consumer group
+that starts at the end of the topic, so old commands are never replayed.
+"""
+import json
+import time
+import uuid
+from enum import StrEnum
+
+from confluent_kafka import Consumer, Producer
+
+REQUESTS = "wm.requests"
+WS_COMMANDS = "wm.ws.commands"
+WS_EVENTS = "wm.ws.events"
+FO_NOTIFICATIONS = "wm.fo.notifications"
+
+
+class MsgType(StrEnum):
+    # wm.requests
+    IRRIGATION_REQUEST = "IRRIGATION_REQUEST"  # request_id, operator_id, ws_id, duration
+    # wm.ws.commands
+    START = "START"                            # ws_id, request_id, operator_id, duration
+    STOP = "STOP"                              # ws_id, reason
+    BLOCK = "BLOCK"                            # ws_id
+    ACTIVATE = "ACTIVATE"                      # ws_id
+    # wm.ws.events
+    TELEMETRY = "TELEMETRY"                    # ws_id, request_id, flow, volume, elapsed
+    FINISHED = "FINISHED"                      # ws_id, request_id, volume, duration, reason
+    # wm.fo.notifications
+    REQUEST_STATUS = "REQUEST_STATUS"          # request_id, operator_id, ws_id, status, reason
+    STATIONS = "STATIONS"                      # stations: [{id, location, state}, ...]
+
+
+def encode(msg_type: MsgType, **fields) -> bytes:
+    """encode(MsgType.STOP, ws_id="WS1") -> b'{"type": "STOP", "ws_id": "WS1"}'"""
+    return json.dumps({"type": msg_type, **fields}).encode()
+
+
+def decode(raw: bytes) -> dict:
+    """The reverse of encode(). Raises ValueError on bad JSON or an unknown type."""
+    msg = json.loads(raw)
+    msg["type"] = MsgType(msg["type"])
+    return msg
+
+
+def new_request_id() -> str:
+    """Short unique ID that links a request to all its replies."""
+    return uuid.uuid4().hex[:8]
+
+
+def make_producer(broker: tuple[str, int]) -> Producer:
+    host, port = broker
+    return Producer({"bootstrap.servers": f"{host}:{port}"})
+
+
+def make_consumer(broker: tuple[str, int], name: str, topics: list[str],
+                  timeout: float = 15.0) -> Consumer:
+    """Consumer in a fresh group that only sees messages produced from now on.
+    Returns once the broker has actually assigned the topics to it."""
+    host, port = broker
+    consumer = Consumer({
+        "bootstrap.servers": f"{host}:{port}",
+        "group.id": f"{name}-{uuid.uuid4().hex[:8]}",  # new group every run
+        "auto.offset.reset": "latest",                 # ...starting at the end of the topic
+        "enable.auto.commit": False,                   # throwaway group: nothing to remember
+    })
+    assigned = []
+    consumer.subscribe(topics, on_assign=lambda c, partitions: assigned.append(True))
+    deadline = time.monotonic() + timeout
+    while not assigned:  # on_assign is called from inside poll()
+        if time.monotonic() > deadline:
+            raise ConnectionError(f"Kafka at {host}:{port} did not assign {topics}")
+        consumer.poll(0.2)
+    return consumer
