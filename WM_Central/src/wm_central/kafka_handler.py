@@ -20,8 +20,11 @@ def consume(broker: tuple[str, int], table: StationTable) -> None:
             if raw.error():
                 print(f"[WM_Central] Kafka error: {raw.error()}")
                 continue
+            value = raw.value()
+            if value is None:  # message without a body: nothing to decode
+                continue
             try:
-                msg = km.decode(raw.value())
+                msg = km.decode(value)
             except (ValueError, KeyError) as e:  # not JSON, or unknown/missing type
                 print(f"[WM_Central] ignoring bad Kafka message ({e})")
                 continue
