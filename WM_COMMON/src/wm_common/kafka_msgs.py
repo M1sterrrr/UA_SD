@@ -59,7 +59,8 @@ class EndReason(StrEnum):
     """The "reason" field of FINISHED."""
 
     TIME_LIMIT = "TIME_LIMIT"  # the requested duration was reached
-    STOPPED = "STOPPED"        # someone used the stop option on the station's menu
+    STOPPED = "STOPPED"        # the station's menu "s", or a STOP command from Central
+    LEAK = "LEAK"              # a fault was detected while watering
 
 
 def encode(msg_type: MsgType, **fields) -> bytes:

@@ -37,6 +37,7 @@ def keyboard_loop(me: EngineState) -> None:
                 print("[WM_WS_E] fault cleared, answering OK")
             else:
                 me.fault.set()
+                me.stop_watering.set()  # a fault must end any irrigation immediately
                 print("[WM_WS_E] fault simulated, answering KO")
         elif choice == "s":
             me.stop_watering.set()  # the watering thread notices within a second
@@ -46,16 +47,15 @@ def keyboard_loop(me: EngineState) -> None:
 
 def water(producer: Producer, msg: dict, me: EngineState) -> None:
     """Runs in its own thread: simulate the flow meter, sending a TELEMETRY
-    reading every second, until the time limit or the menu's stop."""
+    reading every second, until the time limit, a stop or a fault."""
     ws_id, rid, duration = msg["ws_id"], msg["request_id"], msg["duration"]
     print(f"[WM_WS_E] VALVE OPEN: request {rid} by {msg['operator_id']}, {duration} s")
     me.stop_watering.clear()  # forget an "s" pressed while we weren't watering
-    volume, elapsed, reason = 0.0, 0, km.EndReason.TIME_LIMIT
+    volume, elapsed = 0.0, 0
 
-    while elapsed < duration:
-        # wait() sleeps 1 s like time.sleep(1), but returns True at once if "s" is pressed
+    while elapsed < duration and not me.fault.is_set():  # never water with a fault
+        # wait() sleeps 1 s like time.sleep(1), but returns True at once if it is set
         if me.stop_watering.wait(1):
-            reason = km.EndReason.STOPPED
             break
         elapsed += 1
         flow = round(random.uniform(18, 22), 1)  # L/min, a slightly noisy sensor
@@ -65,6 +65,12 @@ def water(producer: Producer, msg: dict, me: EngineState) -> None:
                    volume=round(volume, 2), elapsed=elapsed)
         print(f"[WM_WS_E] {flow} L/min, {volume:.2f} L ({elapsed}/{duration} s)")
 
+    if me.fault.is_set():
+        reason = km.EndReason.LEAK
+    elif elapsed < duration:
+        reason = km.EndReason.STOPPED
+    else:
+        reason = km.EndReason.TIME_LIMIT
     km.publish(producer, km.WS_EVENTS, ws_id, km.MsgType.FINISHED,
                ws_id=ws_id, request_id=rid, volume=round(volume, 2),
                duration=elapsed, reason=reason)
@@ -75,6 +81,9 @@ def handle_command(msg: dict, producer: Producer, me: EngineState) -> None:
     if msg["type"] == km.MsgType.START:
         # water in a separate thread, so we keep reading commands meanwhile
         threading.Thread(target=water, args=(producer, msg, me), daemon=True).start()
+    elif msg["type"] == km.MsgType.STOP:
+        print(f"[WM_WS_E] STOP from Central ({msg.get('reason', '')})")
+        me.stop_watering.set()
     else:
         print(f"[WM_WS_E] command {msg['type']} not implemented yet")
 

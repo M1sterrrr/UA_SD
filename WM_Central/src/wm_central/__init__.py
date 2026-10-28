@@ -28,4 +28,4 @@ def main() -> None:
     threading.Thread(
         target=kafka_handler.consume, args=(args.broker, table, producer), daemon=True
     ).start()
-    server.serve(args.port, table)
+    server.serve(args.port, table, producer)

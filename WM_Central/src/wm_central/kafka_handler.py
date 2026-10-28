@@ -78,7 +78,8 @@ def handle_telemetry(msg: dict, table: StationTable) -> None:
 
 
 def handle_finished(msg: dict, table: StationTable) -> None:
-    if table.finish(msg["ws_id"], msg["request_id"]):
+    leaked = msg["reason"] == km.EndReason.LEAK
+    if table.finish(msg["ws_id"], msg["request_id"], leaked):
         print(
             f"[WM_Central] {msg['ws_id']} finished request {msg['request_id']} "
             f"({msg['reason']}): {msg['volume']} L in {msg['duration']} s"

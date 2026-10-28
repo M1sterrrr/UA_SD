@@ -3,8 +3,11 @@ import socket
 import sqlite3
 import threading
 
+from confluent_kafka import Producer
+
 from wm_central import db
 from wm_central.stations import StationTable
+from wm_common import kafka_msgs as km
 from wm_common.messages import Message, OpCode, recv, send
 from wm_common.states import WSState
 
@@ -38,15 +41,24 @@ REPORT_STATES = {
 }
 
 
-def handle_report(msg: Message, ws_id: str, table: StationTable) -> Message:
+def handle_report(
+    msg: Message, ws_id: str, table: StationTable, producer: Producer
+) -> Message:
     """Apply one message from an authenticated monitor. Returns the reply to send."""
     if msg.op not in REPORT_STATES or msg.fields != [ws_id]:
         return Message(OpCode.KO, ["unexpected message"])
-    table.set_state(ws_id, REPORT_STATES[msg.op])
+    previous = table.set_state(ws_id, REPORT_STATES[msg.op])
+    if msg.op == OpCode.LEAK and previous == WSState.WATERING:
+        # a fault during irrigation: make sure the engine closes the valve
+        km.publish(producer, km.WS_COMMANDS, ws_id, km.MsgType.STOP,
+                   ws_id=ws_id, reason=km.EndReason.LEAK)
+        print(f"[WM_Central] {ws_id} leaked while watering: STOP sent")
     return Message(OpCode.OK)
 
 
-def handle_monitor(conn: socket.socket, addr: tuple, table: StationTable) -> None:
+def handle_monitor(
+    conn: socket.socket, addr: tuple, table: StationTable, producer: Producer
+) -> None:
     """Runs in its own thread for the whole life of one monitor connection."""
     with conn:
         try:
@@ -68,14 +80,14 @@ def handle_monitor(conn: socket.socket, addr: tuple, table: StationTable) -> Non
                 while True:
                     msg = recv(conn)
                     print(f"[WM_Central] {ws_id}: {msg.to_text()}")
-                    send(conn, handle_report(msg, ws_id, table))
+                    send(conn, handle_report(msg, ws_id, table, producer))
             finally:
                 table.set_state(ws_id, WSState.DISCONNECTED)
         except (ConnectionError, TimeoutError, ValueError) as e:
             print(f"[WM_Central] connection from {addr} closed ({e})")
 
 
-def serve(port: int, table: StationTable) -> None:
+def serve(port: int, table: StationTable, producer: Producer) -> None:
     """Accept monitors forever, each one in a new thread."""
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -85,4 +97,6 @@ def serve(port: int, table: StationTable) -> None:
 
     while True:
         conn, addr = server.accept()
-        threading.Thread(target=handle_monitor, args=(conn, addr, table), daemon=True).start()
+        threading.Thread(
+            target=handle_monitor, args=(conn, addr, table, producer), daemon=True
+        ).start()
