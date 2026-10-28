@@ -1,4 +1,4 @@
-"""CENTRAL's Kafka side: consumes irrigation requests and answers them."""
+"""CENTRAL's Kafka side: answers irrigation requests and follows station telemetry."""
 
 import sqlite3
 
@@ -7,40 +7,31 @@ from confluent_kafka import Producer
 from wm_central import db
 from wm_central.stations import StationTable
 from wm_common import kafka_msgs as km
-from wm_common.states import WSState
 
 
 def notify(producer: Producer, msg: dict, status: km.Status, reason: str = "") -> None:
     """Send a REQUEST_STATUS about request `msg` to its operator."""
-    producer.produce(
+    km.publish(
+        producer,
         km.FO_NOTIFICATIONS,
-        key=msg["operator_id"],
-        value=km.encode(
-            km.MsgType.REQUEST_STATUS,
-            request_id=msg["request_id"],
-            operator_id=msg["operator_id"],
-            ws_id=msg["ws_id"],
-            status=status,
-            reason=reason,
-        ),
+        msg["operator_id"],
+        km.MsgType.REQUEST_STATUS,
+        request_id=msg["request_id"],
+        operator_id=msg["operator_id"],
+        ws_id=msg["ws_id"],
+        status=status,
+        reason=reason,
     )
-    producer.flush()
 
 
-def check_request(
-    msg: dict, table: StationTable, db_conn: sqlite3.Connection
-) -> str | None:
-    """Returns why the request must be denied, or None if it can go ahead."""
+def check_request(msg: dict, db_conn: sqlite3.Connection) -> str | None:
+    """Checks that don't need the station table. Returns why the request
+    must be denied, or None if it can go ahead."""
     if db.get_operator(db_conn, msg["operator_id"]) is None:
         return "unknown operator"
     duration = msg["duration"]
     if not isinstance(duration, int) or duration <= 0:
         return "invalid duration"
-    state = table.get_state(msg["ws_id"])
-    if state is None:
-        return "unknown station"
-    if state != WSState.AVAILABLE:
-        return f"station is {state}"
     return None
 
 
@@ -54,37 +45,55 @@ def handle_request(
     )
     notify(producer, msg, km.Status.RECEIVED)
 
-    reason = check_request(msg, table, db_conn)
+    # reserve() runs only if the other checks passed ("or" stops at the first reason)
+    reason = check_request(msg, db_conn) or table.reserve(
+        msg["ws_id"], rid, msg["operator_id"]
+    )
     if reason:
         print(f"[WM_Central] request {rid} DENIED: {reason}")
         notify(producer, msg, km.Status.DENIED, reason)
-    else:
-        print(f"[WM_Central] request {rid} AUTHORIZED")
-        notify(producer, msg, km.Status.AUTHORIZED)
+        return
+
+    # the station is reserved: tell its engine to start
+    km.publish(
+        producer,
+        km.WS_COMMANDS,
+        msg["ws_id"],
+        km.MsgType.START,
+        ws_id=msg["ws_id"],
+        request_id=rid,
+        operator_id=msg["operator_id"],
+        duration=msg["duration"],
+    )
+    print(f"[WM_Central] request {rid} AUTHORIZED, START sent to {msg['ws_id']}")
+    notify(producer, msg, km.Status.AUTHORIZED)
+
+
+def handle_telemetry(msg: dict, table: StationTable) -> None:
+    if table.set_telemetry(msg["ws_id"], msg["request_id"], msg["flow"], msg["volume"]):
+        print(
+            f"[WM_Central] {msg['ws_id']} watering: {msg['flow']} L/min, "
+            f"{msg['volume']} L ({msg['elapsed']} s)"
+        )
 
 
 def consume(broker: tuple[str, int], table: StationTable, producer: Producer) -> None:
-    """Runs in its own thread: read wm.requests forever."""
+    """Runs in its own thread: read requests and station events forever."""
     db_conn = db.connect()  # this thread's own DB connection
-    consumer = km.make_consumer(broker, "central", [km.REQUESTS])
-    print(f"[WM_Central] listening on Kafka topic {km.REQUESTS}")
+    consumer = km.make_consumer(broker, "central", [km.REQUESTS, km.WS_EVENTS])
+    print(f"[WM_Central] listening on Kafka topics {km.REQUESTS}, {km.WS_EVENTS}")
     try:
         while True:
-            raw = consumer.poll(1.0)
-            if raw is None:
-                continue
-            if raw.error():
-                print(f"[WM_Central] Kafka error: {raw.error()}")
-                continue
-            value = raw.value()
-            if value is None:  # message without a body: nothing to decode
+            msg = km.poll(consumer)
+            if msg is None:
                 continue
             try:
-                msg = km.decode(value)
                 if msg["type"] == km.MsgType.IRRIGATION_REQUEST:
                     handle_request(msg, table, db_conn, producer)
-            except (ValueError, KeyError) as e:  # bad JSON, unknown type, missing field
-                print(f"[WM_Central] ignoring bad Kafka message ({e!r})")
+                elif msg["type"] == km.MsgType.TELEMETRY:
+                    handle_telemetry(msg, table)
+            except KeyError as e:  # a field our handlers need is missing
+                print(f"[WM_Central] ignoring incomplete message ({e!r})")
     finally:
         consumer.close()
         db_conn.close()

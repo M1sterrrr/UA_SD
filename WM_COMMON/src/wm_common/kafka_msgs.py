@@ -67,6 +67,28 @@ def decode(raw: bytes) -> dict:
     return msg
 
 
+def publish(producer: Producer, topic: str, key: str, msg_type: MsgType, **fields) -> None:
+    """Send one message and wait until Kafka has stored it."""
+    producer.produce(topic, key=key, value=encode(msg_type, **fields))
+    producer.flush()
+
+
+def poll(consumer: Consumer, timeout: float = 1.0) -> dict | None:
+    """Wait up to `timeout` s for the next message. Returns it decoded, or None if
+    nothing arrived (empty, Kafka errors and garbage messages are skipped too)."""
+    raw = consumer.poll(timeout)
+    if raw is None or raw.error():
+        return None
+    value = raw.value()
+    if value is None:
+        return None
+    try:
+        return decode(value)
+    except (ValueError, KeyError) as e:
+        print(f"[kafka] ignoring bad message ({e!r})")
+        return None
+
+
 def new_request_id() -> str:
     """Short unique ID that links a request to all its replies."""
     return uuid.uuid4().hex[:8]
