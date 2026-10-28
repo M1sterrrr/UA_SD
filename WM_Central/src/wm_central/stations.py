@@ -63,6 +63,20 @@ class StationTable:
             station.flow, station.volume = flow, volume
             return True
 
+    def finish(self, ws_id: str, request_id: str) -> bool:
+        """The irrigation `request_id` ended: free the station (WATERING -> AVAILABLE).
+        False if the station wasn't serving that request."""
+        with self._lock:
+            station = self._stations.get(ws_id)
+            if station is None or station.request_id != request_id:
+                return False
+            if station.state == WSState.WATERING:  # a LEAK meanwhile stays a LEAK
+                station.state = WSState.AVAILABLE
+            station.request_id = station.operator_id = None
+            station.flow = 0.0
+        self.print_table()
+        return True
+
     def set_state(self, ws_id: str, state: WSState) -> None:
         with self._lock:
             self._stations[ws_id].state = state

@@ -55,6 +55,13 @@ class Status(StrEnum):
     DENIED = "DENIED"          # a check failed; "reason" says which
 
 
+class EndReason(StrEnum):
+    """The "reason" field of FINISHED."""
+
+    TIME_LIMIT = "TIME_LIMIT"  # the requested duration was reached
+    STOPPED = "STOPPED"        # someone used the stop option on the station's menu
+
+
 def encode(msg_type: MsgType, **fields) -> bytes:
     """encode(MsgType.STOP, ws_id="WS1") -> b'{"type": "STOP", "ws_id": "WS1"}'"""
     return json.dumps({"type": msg_type, **fields}).encode()

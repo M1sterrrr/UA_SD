@@ -77,6 +77,14 @@ def handle_telemetry(msg: dict, table: StationTable) -> None:
         )
 
 
+def handle_finished(msg: dict, table: StationTable) -> None:
+    if table.finish(msg["ws_id"], msg["request_id"]):
+        print(
+            f"[WM_Central] {msg['ws_id']} finished request {msg['request_id']} "
+            f"({msg['reason']}): {msg['volume']} L in {msg['duration']} s"
+        )
+
+
 def consume(broker: tuple[str, int], table: StationTable, producer: Producer) -> None:
     """Runs in its own thread: read requests and station events forever."""
     db_conn = db.connect()  # this thread's own DB connection
@@ -92,6 +100,8 @@ def consume(broker: tuple[str, int], table: StationTable, producer: Producer) ->
                     handle_request(msg, table, db_conn, producer)
                 elif msg["type"] == km.MsgType.TELEMETRY:
                     handle_telemetry(msg, table)
+                elif msg["type"] == km.MsgType.FINISHED:
+                    handle_finished(msg, table)
             except KeyError as e:  # a field our handlers need is missing
                 print(f"[WM_Central] ignoring incomplete message ({e!r})")
     finally:

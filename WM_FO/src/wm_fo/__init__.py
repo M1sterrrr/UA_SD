@@ -35,14 +35,21 @@ def wait_for_verdict(consumer: Consumer, request_id: str) -> bool:
 
 
 def follow_irrigation(consumer: Consumer, request_id: str) -> None:
-    """Print the station's telemetry for our request until it goes quiet."""
+    """Print the station's telemetry for our request until it FINISHES
+    (or goes quiet, if the station died)."""
     while msg := next_for_request(consumer, request_id, SILENCE_TIMEOUT):
         if msg["type"] == km.MsgType.TELEMETRY:
             print(
                 f"[WM_FO] {msg['ws_id']}: {msg['flow']} L/min, "
                 f"{msg['volume']} L ({msg['elapsed']} s)"
             )
-    print(f"[WM_FO] {request_id}: no telemetry for {SILENCE_TIMEOUT:.0f} s, stopped watching")
+        elif msg["type"] == km.MsgType.FINISHED:
+            print(
+                f"[WM_FO] {request_id} FINISHED ({msg['reason']}): "
+                f"{msg['volume']} L in {msg['duration']} s"
+            )
+            return
+    print(f"[WM_FO] {request_id}: no news from the station for {SILENCE_TIMEOUT:.0f} s")
 
 
 def main() -> None:

@@ -2,7 +2,6 @@ import argparse
 import random
 import socket
 import threading
-import time
 
 from confluent_kafka import Consumer, Producer
 
@@ -11,56 +10,76 @@ from wm_common.cli import host_port
 from wm_common.messages import Message, OpCode, recv, send
 
 
-class Identity:
-    """Who this engine is. Written once by the monitor thread (IDENTIFY),
-    read by the Kafka thread to pick out our own commands."""
+class EngineState:
+    """Everything the engine's threads share."""
 
-    ws_id: str | None = None
-    location: str | None = None
+    def __init__(self) -> None:
+        self.ws_id: str | None = None  # set once by the monitor (IDENTIFY)
+        self.location: str | None = None
+        self.fault = threading.Event()  # menu "f": simulated fault (answer KO)
+        self.stop_watering = threading.Event()  # menu "s": end the irrigation now
 
 
-def keyboard_loop(fault: threading.Event) -> None:
-    """Runs in its own thread: ENTER toggles a simulated fault."""
-    print("[WM_WS_E] press ENTER to toggle a simulated fault (KO)")
+MENU = "[WM_WS_E] menu: f = toggle simulated fault, s = stop watering"
+
+
+def keyboard_loop(me: EngineState) -> None:
+    """Runs in its own thread: the station's local menu."""
+    print(MENU)
     while True:
         try:
-            input()
+            choice = input().strip().lower()
         except EOFError:  # stdin closed (Ctrl+D): no more keyboard input
             return
-        if fault.is_set():
-            fault.clear()
-            print("[WM_WS_E] fault cleared, answering OK")
+        if choice == "f":
+            if me.fault.is_set():
+                me.fault.clear()
+                print("[WM_WS_E] fault cleared, answering OK")
+            else:
+                me.fault.set()
+                print("[WM_WS_E] fault simulated, answering KO")
+        elif choice == "s":
+            me.stop_watering.set()  # the watering thread notices within a second
         else:
-            fault.set()
-            print("[WM_WS_E] fault simulated, answering KO")
+            print(MENU)
 
 
-def water(producer: Producer, msg: dict) -> None:
-    """Runs in its own thread: simulate the flow meter for `duration` seconds,
-    sending a TELEMETRY reading every second."""
+def water(producer: Producer, msg: dict, me: EngineState) -> None:
+    """Runs in its own thread: simulate the flow meter, sending a TELEMETRY
+    reading every second, until the time limit or the menu's stop."""
     ws_id, rid, duration = msg["ws_id"], msg["request_id"], msg["duration"]
     print(f"[WM_WS_E] VALVE OPEN: request {rid} by {msg['operator_id']}, {duration} s")
-    volume = 0.0
-    for elapsed in range(1, duration + 1):
-        time.sleep(1)
+    me.stop_watering.clear()  # forget an "s" pressed while we weren't watering
+    volume, elapsed, reason = 0.0, 0, km.EndReason.TIME_LIMIT
+
+    while elapsed < duration:
+        # wait() sleeps 1 s like time.sleep(1), but returns True at once if "s" is pressed
+        if me.stop_watering.wait(1):
+            reason = km.EndReason.STOPPED
+            break
+        elapsed += 1
         flow = round(random.uniform(18, 22), 1)  # L/min, a slightly noisy sensor
         volume += flow / 60  # litres that flowed during this one second
         km.publish(producer, km.WS_EVENTS, ws_id, km.MsgType.TELEMETRY,
                    ws_id=ws_id, request_id=rid, flow=flow,
                    volume=round(volume, 2), elapsed=elapsed)
         print(f"[WM_WS_E] {flow} L/min, {volume:.2f} L ({elapsed}/{duration} s)")
-    print("[WM_WS_E] VALVE CLOSED: time limit reached")
+
+    km.publish(producer, km.WS_EVENTS, ws_id, km.MsgType.FINISHED,
+               ws_id=ws_id, request_id=rid, volume=round(volume, 2),
+               duration=elapsed, reason=reason)
+    print(f"[WM_WS_E] VALVE CLOSED ({reason}): {volume:.2f} L in {elapsed} s")
 
 
-def handle_command(msg: dict, producer: Producer) -> None:
+def handle_command(msg: dict, producer: Producer, me: EngineState) -> None:
     if msg["type"] == km.MsgType.START:
         # water in a separate thread, so we keep reading commands meanwhile
-        threading.Thread(target=water, args=(producer, msg), daemon=True).start()
+        threading.Thread(target=water, args=(producer, msg, me), daemon=True).start()
     else:
         print(f"[WM_WS_E] command {msg['type']} not implemented yet")
 
 
-def command_loop(consumer: Consumer, producer: Producer, me: Identity,
+def command_loop(consumer: Consumer, producer: Producer, me: EngineState,
                  stop: threading.Event) -> None:
     """Runs in its own thread: read wm.ws.commands, keep only ours.
     This thread owns the consumer, so it is also the one that closes it."""
@@ -70,14 +89,14 @@ def command_loop(consumer: Consumer, producer: Producer, me: Identity,
             if msg is None or me.ws_id is None or msg.get("ws_id") != me.ws_id:
                 continue  # nothing, not identified yet, or another station's command
             try:
-                handle_command(msg, producer)
+                handle_command(msg, producer, me)
             except KeyError as e:
                 print(f"[WM_WS_E] ignoring incomplete command ({e!r})")
     finally:
         consumer.close()
 
 
-def monitor_loop(sock: socket.socket, fault: threading.Event, me: Identity) -> None:
+def monitor_loop(sock: socket.socket, me: EngineState) -> None:
     """Answer the monitor's IDENTIFY and HEALTH requests until it disconnects."""
     while True:
         msg = recv(sock)
@@ -86,7 +105,7 @@ def monitor_loop(sock: socket.socket, fault: threading.Event, me: Identity) -> N
             print(f"[WM_WS_E] I am station {me.ws_id} ({me.location})")
             send(sock, Message(OpCode.OK))
         elif msg.op == OpCode.HEALTH:
-            send(sock, Message(OpCode.KO if fault.is_set() else OpCode.OK))
+            send(sock, Message(OpCode.KO if me.fault.is_set() else OpCode.OK))
         else:
             send(sock, Message(OpCode.KO, ["unknown request"]))
 
@@ -97,12 +116,11 @@ def main() -> None:
     parser.add_argument("monitor", type=host_port, help="WM_WS_M HOST:PORT")
     args = parser.parse_args()
 
-    fault = threading.Event()  # shared between the keyboard thread and the main thread
-    threading.Thread(target=keyboard_loop, args=(fault,), daemon=True).start()
+    me = EngineState()
+    threading.Thread(target=keyboard_loop, args=(me,), daemon=True).start()
 
     # Kafka first: by the time the monitor reports us healthy (and Central can send
     # START), our consumer is already listening.
-    me = Identity()
     stop = threading.Event()  # tells the Kafka thread to finish
     producer = km.make_producer(args.broker)
     consumer = km.make_consumer(args.broker, "engine", [km.WS_COMMANDS])
@@ -115,7 +133,7 @@ def main() -> None:
     sock = socket.create_connection(args.monitor)
     print(f"[WM_WS_E] connected to monitor at {args.monitor}")
     try:
-        monitor_loop(sock, fault, me)
+        monitor_loop(sock, me)
     except ConnectionError:
         print("[WM_WS_E] monitor closed the connection")
     finally:
