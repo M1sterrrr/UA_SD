@@ -5,7 +5,7 @@ Topic               Key          Producer        Consumer            Message typ
 wm.requests         ws_id        WM_FO, WM_WS_E  WM_Central          IRRIGATION_REQUEST
 wm.ws.commands      ws_id        WM_Central      WM_WS_E             START, STOP, BLOCK, ACTIVATE
 wm.ws.events        ws_id        WM_WS_E         WM_Central, WM_FO   TELEMETRY, FINISHED
-wm.fo.notifications operator_id  WM_Central      WM_FO               REQUEST_STATUS, STATIONS
+wm.fo.notifications operator_id  WM_Central      WM_FO, WM_WS_E      REQUEST_STATUS, STATIONS
 
 The FO reads wm.ws.events directly and keeps only events with its own request_id.
 If an engine cannot start (fault), it answers START with FINISHED (reason LEAK) at once.

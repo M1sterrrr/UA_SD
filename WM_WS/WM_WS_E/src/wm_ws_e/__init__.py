@@ -20,18 +20,41 @@ class EngineState:
         self.stop_watering = threading.Event()  # menu "s": end the irrigation now
 
 
-MENU = "[WM_WS_E] menu: f = toggle simulated fault, s = stop watering"
+MENU = ("[WM_WS_E] menu: w <operator_id> <seconds> = water (e.g. w OP1 30), "
+        "s = stop watering, f = toggle simulated fault")
 
 
-def keyboard_loop(me: EngineState) -> None:
+def request_watering(producer: Producer, me: EngineState, words: list[str]) -> None:
+    """Menu "w OP1 30": ask Central for an irrigation, exactly like the FO app does.
+    Central checks it and, if authorized, sends us a normal START."""
+    try:
+        _, operator_id, seconds = words
+        duration = int(seconds)
+    except ValueError:
+        print("[WM_WS_E] usage: w <operator_id> <seconds>")
+        return
+    if me.ws_id is None:
+        print("[WM_WS_E] not identified by the monitor yet, try again in a moment")
+        return
+    request_id = km.new_request_id()
+    km.publish(producer, km.REQUESTS, me.ws_id, km.MsgType.IRRIGATION_REQUEST,
+               request_id=request_id, operator_id=operator_id,
+               ws_id=me.ws_id, duration=duration)
+    print(f"[WM_WS_E] request {request_id} sent to Central: {duration} s for {operator_id}")
+
+
+def keyboard_loop(me: EngineState, producer: Producer) -> None:
     """Runs in its own thread: the station's local menu."""
     print(MENU)
     while True:
         try:
-            choice = input().strip().lower()
+            words = input().split()
         except EOFError:  # stdin closed (Ctrl+D): no more keyboard input
             return
-        if choice == "f":
+        choice = words[0].lower() if words else ""
+        if choice == "w":
+            request_watering(producer, me, words)
+        elif choice == "f":
             if me.fault.is_set():
                 me.fault.clear()
                 print("[WM_WS_E] fault cleared, answering OK")
@@ -84,13 +107,17 @@ def handle_command(msg: dict, producer: Producer, me: EngineState) -> None:
     elif msg["type"] == km.MsgType.STOP:
         print(f"[WM_WS_E] STOP from Central ({msg.get('reason', '')})")
         me.stop_watering.set()
+    elif msg["type"] == km.MsgType.REQUEST_STATUS:  # Central's answers about our station
+        reason = f" ({msg['reason']})" if msg["reason"] else ""
+        print(f"[WM_WS_E] request {msg['request_id']} by {msg['operator_id']}: "
+              f"{msg['status']}{reason}")
     else:
         print(f"[WM_WS_E] command {msg['type']} not implemented yet")
 
 
 def command_loop(consumer: Consumer, producer: Producer, me: EngineState,
                  stop: threading.Event) -> None:
-    """Runs in its own thread: read wm.ws.commands, keep only ours.
+    """Runs in its own thread: read commands and request answers, keep only ours.
     This thread owns the consumer, so it is also the one that closes it."""
     try:
         while not stop.is_set():
@@ -126,18 +153,20 @@ def main() -> None:
     args = parser.parse_args()
 
     me = EngineState()
-    threading.Thread(target=keyboard_loop, args=(me,), daemon=True).start()
+    producer = km.make_producer(args.broker)
+    threading.Thread(target=keyboard_loop, args=(me, producer), daemon=True).start()
 
     # Kafka first: by the time the monitor reports us healthy (and Central can send
     # START), our consumer is already listening.
     stop = threading.Event()  # tells the Kafka thread to finish
-    producer = km.make_producer(args.broker)
-    consumer = km.make_consumer(args.broker, "engine", [km.WS_COMMANDS])
+    consumer = km.make_consumer(
+        args.broker, "engine", [km.WS_COMMANDS, km.FO_NOTIFICATIONS]
+    )
     kafka_thread = threading.Thread(
         target=command_loop, args=(consumer, producer, me, stop), daemon=True
     )
     kafka_thread.start()
-    print(f"[WM_WS_E] listening on Kafka topic {km.WS_COMMANDS}")
+    print(f"[WM_WS_E] listening on Kafka topics {km.WS_COMMANDS}, {km.FO_NOTIFICATIONS}")
 
     sock = socket.create_connection(args.monitor)
     print(f"[WM_WS_E] connected to monitor at {args.monitor}")
