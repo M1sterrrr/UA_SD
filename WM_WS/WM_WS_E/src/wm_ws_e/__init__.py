@@ -18,6 +18,7 @@ class EngineState:
         self.location: str | None = None
         self.fault = threading.Event()  # menu "f": simulated fault (answer KO)
         self.stop_watering = threading.Event()  # menu "s": end the irrigation now
+        self.out_of_service = threading.Event()  # Central's BLOCK (until ACTIVATE)
 
 
 MENU = ("[WM_WS_E] menu: w <operator_id> <seconds> = water (e.g. w OP1 30), "
@@ -70,13 +71,14 @@ def keyboard_loop(me: EngineState, producer: Producer) -> None:
 
 def water(producer: Producer, msg: dict, me: EngineState) -> None:
     """Runs in its own thread: simulate the flow meter, sending a TELEMETRY
-    reading every second, until the time limit, a stop or a fault."""
+    reading every second, until the time limit, a stop, a fault or a block."""
     ws_id, rid, duration = msg["ws_id"], msg["request_id"], msg["duration"]
     print(f"[WM_WS_E] VALVE OPEN: request {rid} by {msg['operator_id']}, {duration} s")
     me.stop_watering.clear()  # forget an "s" pressed while we weren't watering
     volume, elapsed = 0.0, 0
 
-    while elapsed < duration and not me.fault.is_set():  # never water with a fault
+    # never water with a fault or while Central has us out of service
+    while elapsed < duration and not me.fault.is_set() and not me.out_of_service.is_set():
         # wait() sleeps 1 s like time.sleep(1), but returns True at once if it is set
         if me.stop_watering.wait(1):
             break
@@ -90,6 +92,8 @@ def water(producer: Producer, msg: dict, me: EngineState) -> None:
 
     if me.fault.is_set():
         reason = km.EndReason.LEAK
+    elif me.out_of_service.is_set():
+        reason = km.EndReason.BLOCKED
     elif elapsed < duration:
         reason = km.EndReason.STOPPED
     else:
@@ -107,6 +111,13 @@ def handle_command(msg: dict, producer: Producer, me: EngineState) -> None:
     elif msg["type"] == km.MsgType.STOP:
         print(f"[WM_WS_E] STOP from Central ({msg.get('reason', '')})")
         me.stop_watering.set()
+    elif msg["type"] == km.MsgType.BLOCK:
+        me.out_of_service.set()
+        me.stop_watering.set()  # end any irrigation in progress
+        print("[WM_WS_E] *** OUT OF SERVICE *** (blocked by Central)")
+    elif msg["type"] == km.MsgType.ACTIVATE:
+        me.out_of_service.clear()
+        print("[WM_WS_E] activated by Central: back in service")
     elif msg["type"] == km.MsgType.REQUEST_STATUS:  # Central's answers about our station
         reason = f" ({msg['reason']})" if msg["reason"] else ""
         print(f"[WM_WS_E] request {msg['request_id']} by {msg['operator_id']}: "

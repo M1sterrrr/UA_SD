@@ -61,6 +61,7 @@ class EndReason(StrEnum):
     TIME_LIMIT = "TIME_LIMIT"  # the requested duration was reached
     STOPPED = "STOPPED"        # the station's menu "s", or a STOP command from Central
     LEAK = "LEAK"              # a fault was detected while watering
+    BLOCKED = "BLOCKED"        # Central put the station out of service
 
 
 def encode(msg_type: MsgType, **fields) -> bytes:

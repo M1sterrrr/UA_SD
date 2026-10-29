@@ -5,7 +5,7 @@ import time
 
 from confluent_kafka import Producer
 
-from wm_central import db
+from wm_central import admin, db
 from wm_central.stations import StationTable
 from wm_common import kafka_msgs as km
 
@@ -28,7 +28,8 @@ def notify(producer: Producer, msg: dict, status: km.Status, reason: str = "") -
 def check_request(msg: dict, db_conn: sqlite3.Connection) -> str | None:
     """Checks that don't need the station table. Returns why the request
     must be denied, or None if it can go ahead."""
-    if db.get_operator(db_conn, msg["operator_id"]) is None:
+    operator_id = msg["operator_id"]
+    if operator_id != admin.ADMIN_OPERATOR and db.get_operator(db_conn, operator_id) is None:
         return "unknown operator"
     duration = msg["duration"]
     if not isinstance(duration, int) or duration <= 0:

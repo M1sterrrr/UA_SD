@@ -15,6 +15,7 @@ class Station:
     operator_id: str | None = None
     flow: float = 0.0               # L/min, latest telemetry
     volume: float = 0.0             # L since the irrigation started
+    blocked: bool = False           # Central's order "out of service" (not a health state)
 
 
 class StationTable:
@@ -33,7 +34,8 @@ class StationTable:
             current = self._stations.get(ws_id)
             if current is not None and current.state != WSState.DISCONNECTED:
                 return False
-            self._stations[ws_id] = Station(ws_id, location, WSState.LEAK)
+            blocked = current.blocked if current else False  # a block survives reconnects
+            self._stations[ws_id] = Station(ws_id, location, WSState.LEAK, blocked=blocked)
         self.print_table()
         return True
 
@@ -78,12 +80,47 @@ class StationTable:
         return True
 
     def set_state(self, ws_id: str, state: WSState) -> WSState:
-        """Change a station's state. Returns the state it had before."""
+        """Change a station's state. Returns the state it had before.
+        A blocked station that becomes healthy shows OUT_OF_SERVICE, not AVAILABLE."""
         with self._lock:
             station = self._stations[ws_id]
+            if state == WSState.AVAILABLE and station.blocked:
+                state = WSState.OUT_OF_SERVICE
             previous, station.state = station.state, state
         self.print_table()
         return previous
+
+    def block(self, ws_id: str) -> str | None:
+        """Central's "out of service" order. Returns why it can't be done, or None."""
+        with self._lock:
+            station = self._stations.get(ws_id)
+            if station is None:
+                return "unknown station"
+            if station.state == WSState.DISCONNECTED:
+                return "not connected"
+            station.blocked = True
+            if station.state in (WSState.AVAILABLE, WSState.WATERING):
+                station.state = WSState.OUT_OF_SERVICE  # a LEAK stays LEAK (more urgent)
+        self.print_table()
+        return None
+
+    def activate(self, ws_id: str) -> str | None:
+        """Undo a block. Returns why it can't be done, or None."""
+        with self._lock:
+            station = self._stations.get(ws_id)
+            if station is None:
+                return "unknown station"
+            if station.state == WSState.DISCONNECTED:
+                return "not connected"
+            station.blocked = False
+            if station.state == WSState.OUT_OF_SERVICE:
+                station.state = WSState.AVAILABLE
+        self.print_table()
+        return None
+
+    def ids(self) -> list[str]:
+        with self._lock:
+            return sorted(self._stations)
 
     def snapshot(self) -> list[dict]:
         """A copy of every station's public info, safe to send to other apps."""
