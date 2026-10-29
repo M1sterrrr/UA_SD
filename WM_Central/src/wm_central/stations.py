@@ -128,6 +128,14 @@ class StationTable:
             return [{"id": s.id, "location": s.location, "state": s.state}
                     for s in sorted(self._stations.values(), key=lambda s: s.id)]
 
+    def details(self) -> list[dict]:
+        """Everything about every station, for Central's own dashboard."""
+        with self._lock:
+            return [{"id": s.id, "location": s.location, "state": s.state,
+                     "operator_id": s.operator_id, "request_id": s.request_id,
+                     "flow": s.flow, "volume": s.volume}
+                    for s in sorted(self._stations.values(), key=lambda s: s.id)]
+
     def print_table(self) -> None:
         with self._lock:
             lines = [f"[WM_Central]   {s.id:<5} {s.state:<15} {s.location}"

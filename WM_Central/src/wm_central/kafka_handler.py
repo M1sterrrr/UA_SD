@@ -2,12 +2,25 @@
 
 import sqlite3
 import time
+from collections import deque
 
 from confluent_kafka import Producer
 
 from wm_central import admin, db
 from wm_central.stations import StationTable
 from wm_common import kafka_msgs as km
+
+# The last activation requests and their verdicts, shown on the dashboard.
+# deque(maxlen=...) drops the oldest entry by itself; appendleft() is thread-safe.
+recent_requests: deque[dict] = deque(maxlen=10)
+
+
+def remember(msg: dict, verdict: str) -> None:
+    recent_requests.appendleft({
+        "time": time.strftime("%H:%M:%S"), "request_id": msg["request_id"],
+        "operator_id": msg["operator_id"], "ws_id": msg["ws_id"],
+        "duration": msg["duration"], "verdict": verdict,
+    })
 
 
 def notify(producer: Producer, msg: dict, status: km.Status, reason: str = "") -> None:
@@ -54,6 +67,7 @@ def handle_request(
     if reason:
         print(f"[WM_Central] request {rid} DENIED: {reason}")
         notify(producer, msg, km.Status.DENIED, reason)
+        remember(msg, f"DENIED: {reason}")
         return
 
     # the station is reserved: tell its engine to start
@@ -69,6 +83,7 @@ def handle_request(
     )
     print(f"[WM_Central] request {rid} AUTHORIZED, START sent to {msg['ws_id']}")
     notify(producer, msg, km.Status.AUTHORIZED)
+    remember(msg, "AUTHORIZED")
 
 
 def handle_telemetry(msg: dict, table: StationTable) -> None:

@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WaterManagement Central</title>
+<style>
+  :root {
+    --bg: #f4f6f8; --card: #ffffff; --text: #1d2730; --muted: #66727d; --line: #dde3e8;
+    --green: #2e9e4f; --red: #d23b3b; --orange: #e8890c; --gray: #9aa4ad;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #14191e; --card: #1e252c; --text: #e6ebef; --muted: #96a2ad; --line: #2e3740; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--text);
+         font: 15px/1.4 system-ui, sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: baseline;
+           margin-bottom: 16px; }
+  h1 { margin: 0; font-size: 22px; }
+  h2 { font-size: 16px; margin: 24px 0 8px; }
+  #status { color: var(--muted); }
+  #status.down { color: var(--red); font-weight: 600; }
+
+  /* one card per station */
+  #stations { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+              gap: 12px; }
+  .card { border-radius: 10px; padding: 12px 14px; color: #fff; min-height: 110px; }
+  .card .id { font-size: 20px; font-weight: 700; }
+  .card .loc { opacity: .9; }
+  .card .state { margin-top: 6px; font-weight: 600; letter-spacing: .03em; }
+  .card .live { margin-top: 4px; font-variant-numeric: tabular-nums; }
+
+  /* the colors from the PDF */
+  .AVAILABLE      { background: var(--green); }
+  .WATERING       { background: var(--green); animation: blink 1s infinite; }
+  .LEAK           { background: var(--red); }
+  .OUT_OF_SERVICE { background: var(--orange); }
+  .DISCONNECTED   { background: var(--gray); }
+  @keyframes blink { 50% { filter: brightness(1.35); } }
+
+  table { width: 100%; border-collapse: collapse; background: var(--card);
+          border-radius: 10px; overflow: hidden; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; }
+  .scroll { overflow-x: auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>WaterManagement · Central</h1>
+  <span id="status">connecting…</span>
+</header>
+
+<div id="stations"></div>
+
+<h2>Activation requests</h2>
+<div class="scroll">
+  <table>
+    <thead><tr><th>Time</th><th>Request</th><th>Operator</th><th>Station</th>
+               <th>Seconds</th><th>Verdict</th></tr></thead>
+    <tbody id="requests"></tbody>
+  </table>
+</div>
+
+<script>
+const LABELS = { AVAILABLE: "Available", WATERING: "Watering", LEAK: "Leak",
+                 OUT_OF_SERVICE: "Out of Service", DISCONNECTED: "Disconnected" };
+
+// Text from the server goes into HTML, so escape it (never trust data as markup)
+function esc(text) {
+  return String(text ?? "").replace(/[&<>"']/g, c => "&#" + c.charCodeAt(0) + ";");
+}
+
+function stationCard(s) {
+  let live = "";
+  if (s.state === "WATERING") {
+    live = `<div class="live">${s.flow.toFixed(1)} L/min · ${s.volume.toFixed(2)} L<br>
+            operator ${esc(s.operator_id)}</div>`;
+  }
+  return `<div class="card ${s.state}">
+            <div class="id">${esc(s.id)}</div>
+            <div class="loc">${esc(s.location)}</div>
+            <div class="state">${LABELS[s.state] ?? esc(s.state)}</div>
+            ${live}
+          </div>`;
+}
+
+function requestRow(r) {
+  return `<tr><td>${esc(r.time)}</td><td>${esc(r.request_id)}</td><td>${esc(r.operator_id)}</td>
+          <td>${esc(r.ws_id)}</td><td>${esc(r.duration)}</td><td>${esc(r.verdict)}</td></tr>`;
+}
+
+async function refresh() {
+  const status = document.getElementById("status");
+  try {
+    const state = await (await fetch("/api/state")).json();
+    document.getElementById("stations").innerHTML = state.stations.map(stationCard).join("");
+    document.getElementById("requests").innerHTML =
+      state.requests.map(requestRow).join("") || `<tr><td colspan="6">none yet</td></tr>`;
+    status.className = "";
+    status.textContent = `Central running · up ${state.central.uptime} s · ` +
+                         `${state.central.connected}/${state.stations.length} stations connected`;
+  } catch (e) {
+    status.className = "down";
+    status.textContent = "Central unreachable";
+  }
+}
+
+refresh();
+setInterval(refresh, 1000);  // the PDF wants real time: ask again every second
+</script>
+</body>
+</html>
