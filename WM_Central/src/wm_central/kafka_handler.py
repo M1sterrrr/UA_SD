@@ -1,6 +1,7 @@
 """CENTRAL's Kafka side: answers irrigation requests and follows station telemetry."""
 
 import sqlite3
+import time
 
 from confluent_kafka import Producer
 
@@ -84,6 +85,18 @@ def handle_finished(msg: dict, table: StationTable) -> None:
             f"[WM_Central] {msg['ws_id']} finished request {msg['request_id']} "
             f"({msg['reason']}): {msg['volume']} L in {msg['duration']} s"
         )
+
+
+BROADCAST_INTERVAL = 2.0  # seconds between station lists sent to the operators
+
+
+def broadcast_stations(table: StationTable, producer: Producer) -> None:
+    """Runs in its own thread: tell every operator the state of every station,
+    so they can see which ones are available (PDF step 10)."""
+    while True:
+        km.publish(producer, km.FO_NOTIFICATIONS, "stations", km.MsgType.STATIONS,
+                   stations=table.snapshot())
+        time.sleep(BROADCAST_INTERVAL)
 
 
 def consume(broker: tuple[str, int], table: StationTable, producer: Producer) -> None:

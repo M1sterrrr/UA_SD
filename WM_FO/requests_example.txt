@@ -1,0 +1,5 @@
+# WM_FO requests file: one irrigation per line, "<ws_id> <seconds>"
+# Run: uv run WM_FO localhost:9092 OP1 WM_FO/requests_example.txt
+WS2 3
+WS3 5
+WS2 2

@@ -85,6 +85,12 @@ class StationTable:
         self.print_table()
         return previous
 
+    def snapshot(self) -> list[dict]:
+        """A copy of every station's public info, safe to send to other apps."""
+        with self._lock:
+            return [{"id": s.id, "location": s.location, "state": s.state}
+                    for s in sorted(self._stations.values(), key=lambda s: s.id)]
+
     def print_table(self) -> None:
         with self._lock:
             lines = [f"[WM_Central]   {s.id:<5} {s.state:<15} {s.location}"

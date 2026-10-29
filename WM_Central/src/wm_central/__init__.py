@@ -24,8 +24,11 @@ def main() -> None:
     # One producer for the whole of Central (confluent-kafka producers are thread-safe)
     producer = km.make_producer(args.broker)
 
-    # Two jobs at once: Kafka in a background thread, sockets in the main thread
+    # Three jobs at once: two Kafka jobs in background threads, sockets in the main thread
     threading.Thread(
         target=kafka_handler.consume, args=(args.broker, table, producer), daemon=True
+    ).start()
+    threading.Thread(
+        target=kafka_handler.broadcast_stations, args=(table, producer), daemon=True
     ).start()
     server.serve(args.port, table, producer)
