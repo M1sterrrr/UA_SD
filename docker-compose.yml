@@ -1,10 +1,16 @@
-# Local development infrastructure.  Start: docker compose up -d   Stop: docker compose down
+# The whole WaterManagement system on one machine.
+#   Start everything:   docker compose up -d --build
+#   Only Kafka:         docker compose up -d kafka      (for running the apps with uv run)
+#   An operator:        docker compose run --rm fo
+#   Type into an app:   docker compose attach engine-ws2   (leave with Ctrl+P Ctrl+Q)
+#   Stop everything:    docker compose down
+# Containers reach each other by SERVICE NAME (kafka, central, monitor-ws2, ...).
 services:
   kafka:
     image: apache/kafka:4.0.0
     container_name: wm-kafka
     ports:
-      - "9092:9092"   # host port : container port  -> our apps use localhost:9092
+      - "9092:9092"   # host port : container port  -> apps on the host use localhost:9092
     environment:
       # KRaft mode: this one node is both the broker and its own controller (no ZooKeeper)
       KAFKA_NODE_ID: 1
@@ -24,3 +30,72 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_NUM_PARTITIONS: 1
+    # "Started" is not "ready": the JVM needs a few seconds. This asks the broker for real.
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-broker-api-versions.sh", "--bootstrap-server", "localhost:9092"]
+      interval: 5s
+      timeout: 10s
+      retries: 12
+
+  # Runs once, fills the database, exits. Safe to repeat: existing rows are skipped.
+  seed:
+    image: wm-central
+    build: { context: ., dockerfile: WM_Central/Dockerfile }
+    entrypoint: ["python", "-m", "wm_central.seed"]
+    volumes:
+      - wm-data:/data
+
+  central:
+    image: wm-central
+    build: { context: ., dockerfile: WM_Central/Dockerfile }
+    command: ["5500", "kafka:19092"]
+    ports:
+      - "8080:8080"   # web dashboard
+      - "5500:5500"   # socket server, so a monitor started with uv run can join too
+    volumes:
+      - wm-data:/data
+    stdin_open: true  # keep the admin console usable via `docker compose attach central`
+    tty: true
+    depends_on:
+      kafka: { condition: service_healthy }
+      seed: { condition: service_completed_successfully }
+
+  # ---- Station WS2: a monitor + its engine
+  monitor-ws2:
+    image: wm-ws-m
+    build: { context: ., dockerfile: WM_WS/WM_WS_M/Dockerfile }
+    command: ["6001", "central:5500", "WS2"]
+  engine-ws2:
+    image: wm-ws-e
+    build: { context: ., dockerfile: WM_WS/WM_WS_E/Dockerfile }
+    command: ["kafka:19092", "monitor-ws2:6001"]
+    stdin_open: true  # the engine menu (w / s / f) via `docker compose attach engine-ws2`
+    tty: true
+    depends_on:
+      kafka: { condition: service_healthy }
+
+  # ---- Station WS3: same images, different arguments
+  monitor-ws3:
+    image: wm-ws-m
+    build: { context: ., dockerfile: WM_WS/WM_WS_M/Dockerfile }
+    command: ["6001", "central:5500", "WS3"]
+  engine-ws3:
+    image: wm-ws-e
+    build: { context: ., dockerfile: WM_WS/WM_WS_E/Dockerfile }
+    command: ["kafka:19092", "monitor-ws3:6001"]
+    stdin_open: true
+    tty: true
+    depends_on:
+      kafka: { condition: service_healthy }
+
+  # ---- Operator: interactive, so it is not started by `up`. Use: docker compose run --rm fo
+  fo:
+    image: wm-fo
+    build: { context: ., dockerfile: WM_FO/Dockerfile }
+    command: ["kafka:19092", "OP1"]
+    profiles: [tools]
+    depends_on:
+      kafka: { condition: service_healthy }
+
+volumes:
+  wm-data:  # Central's SQLite file; survives `docker compose down` (not `down -v`)
