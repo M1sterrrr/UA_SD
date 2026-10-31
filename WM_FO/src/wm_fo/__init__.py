@@ -122,7 +122,7 @@ def run_interactive(producer: Producer, consumer: Consumer, operator_id: str) ->
         run_request(producer, consumer, operator_id, ws_id, duration)
 
 
-def main() -> None:
+def run() -> None:
     parser = argparse.ArgumentParser(prog="WM_FO")
     parser.add_argument("broker", type=host_port, help="Kafka bootstrap server HOST:PORT")
     parser.add_argument("operator_id", help="ID of this operator")
@@ -142,3 +142,10 @@ def main() -> None:
             run_interactive(producer, consumer, args.operator_id)
     finally:
         consumer.close()
+
+
+def main() -> None:
+    try:
+        run()
+    except KeyboardInterrupt:
+        print("[WM_FO] stopped (Ctrl+C)")

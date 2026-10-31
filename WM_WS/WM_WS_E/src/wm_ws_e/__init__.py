@@ -2,6 +2,7 @@ import argparse
 import random
 import socket
 import threading
+import time
 
 from confluent_kafka import Consumer, Producer
 
@@ -20,6 +21,8 @@ class EngineState:
         self.stop_watering = threading.Event()  # menu "s": end the irrigation now
         self.out_of_service = threading.Event()  # Central's BLOCK (until ACTIVATE)
 
+
+RETRY_DELAY = 3.0  # seconds between attempts to reach the monitor
 
 MENU = ("[WM_WS_E] menu: w <operator_id> <seconds> = water (e.g. w OP1 30), "
         "s = stop watering, f = toggle simulated fault")
@@ -157,7 +160,7 @@ def monitor_loop(sock: socket.socket, me: EngineState) -> None:
             send(sock, Message(OpCode.KO, ["unknown request"]))
 
 
-def main() -> None:
+def run() -> None:
     parser = argparse.ArgumentParser(prog="WM_WS_E")
     parser.add_argument("broker", type=host_port, help="Kafka bootstrap server HOST:PORT")
     parser.add_argument("monitor", type=host_port, help="WM_WS_M HOST:PORT")
@@ -179,13 +182,29 @@ def main() -> None:
     kafka_thread.start()
     print(f"[WM_WS_E] listening on Kafka topics {km.WS_COMMANDS}, {km.FO_NOTIFICATIONS}")
 
-    sock = socket.create_connection(args.monitor)
-    print(f"[WM_WS_E] connected to monitor at {args.monitor}")
     try:
-        monitor_loop(sock, me)
-    except ConnectionError:
-        print("[WM_WS_E] monitor closed the connection")
+        while True:  # reconnect forever: the monitor may restart
+            try:
+                sock = socket.create_connection(args.monitor)
+            except OSError as e:
+                print(f"[WM_WS_E] monitor not reachable ({e}), retrying in {RETRY_DELAY:.0f} s")
+                time.sleep(RETRY_DELAY)
+                continue
+            print(f"[WM_WS_E] connected to monitor at {args.monitor}")
+            try:
+                monitor_loop(sock, me)
+            except ConnectionError:
+                print("[WM_WS_E] lost the monitor, reconnecting")
+                me.stop_watering.set()  # nobody supervises us now: close the valve
+            finally:
+                sock.close()
     finally:
-        sock.close()
         stop.set()  # never close the consumer here: the Kafka thread may be inside poll()
         kafka_thread.join(timeout=3)
+
+
+def main() -> None:
+    try:
+        run()
+    except KeyboardInterrupt:
+        print("[WM_WS_E] stopped (Ctrl+C)")

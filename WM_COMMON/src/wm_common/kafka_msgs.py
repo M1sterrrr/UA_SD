@@ -103,16 +103,25 @@ def new_request_id() -> str:
     return uuid.uuid4().hex[:8]
 
 
-def make_producer(broker: tuple[str, int]) -> Producer:
+def base_config(broker: tuple[str, int]) -> dict:
+    """Settings every Kafka client of ours shares."""
     host, port = broker
-    return Producer({"bootstrap.servers": f"{host}:{port}"})
+    return {
+        "bootstrap.servers": f"{host}:{port}",
+        # only real errors: while Kafka is down the library retries by itself,
+        # and its info messages about every retry (level 6) would flood the screen
+        "log_level": 3,
+    }
+
+
+def make_producer(broker: tuple[str, int]) -> Producer:
+    return Producer(base_config(broker))
 
 
 def ensure_topics(broker: tuple[str, int]) -> None:
     """Create our topics if they don't exist yet. A consumer can't subscribe to a
     topic that was never created (only producers create topics automatically)."""
-    host, port = broker
-    admin = AdminClient({"bootstrap.servers": f"{host}:{port}"})
+    admin = AdminClient(base_config(broker))
     wanted = [NewTopic(t, num_partitions=1, replication_factor=1)
               for t in (REQUESTS, WS_COMMANDS, WS_EVENTS, FO_NOTIFICATIONS)]
     for future in admin.create_topics(wanted).values():
@@ -130,7 +139,7 @@ def make_consumer(broker: tuple[str, int], name: str, topics: list[str],
     ensure_topics(broker)
     host, port = broker
     consumer = Consumer({
-        "bootstrap.servers": f"{host}:{port}",
+        **base_config(broker),
         "group.id": f"{name}-{uuid.uuid4().hex[:8]}",  # new group every run
         "auto.offset.reset": "latest",                 # ...starting at the end of the topic
         "enable.auto.commit": False,                   # throwaway group: nothing to remember

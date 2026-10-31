@@ -12,6 +12,7 @@ from wm_common.messages import Message, OpCode, recv, send
 from wm_common.states import WSState
 
 AUTH_TIMEOUT = 10.0  # a monitor must authenticate within this many seconds
+MONITOR_TIMEOUT = 6.0  # monitors PING every 2 s: ~3 missed in a row = disconnected
 
 
 def authenticate(conn: socket.socket) -> sqlite3.Row | None:
@@ -45,6 +46,8 @@ def handle_report(
     msg: Message, ws_id: str, table: StationTable, producer: Producer
 ) -> Message:
     """Apply one message from an authenticated monitor. Returns the reply to send."""
+    if msg.op == OpCode.PING and msg.fields == [ws_id]:
+        return Message(OpCode.OK)  # heartbeat: the recv() that got it already proved we're alive
     if msg.op not in REPORT_STATES or msg.fields != [ws_id]:
         return Message(OpCode.KO, ["unexpected message"])
     previous = table.set_state(ws_id, REPORT_STATES[msg.op])
@@ -76,10 +79,11 @@ def handle_monitor(
             try:  # from here on the station is marked connected in the table
                 send(conn, Message(OpCode.OK, [location]))
                 print(f"[WM_Central] station {ws_id} ({location}) authenticated")
-                conn.settimeout(None)  # authenticated: from now on wait as long as needed
+                conn.settimeout(MONITOR_TIMEOUT)  # silence this long = monitor is gone
                 while True:
                     msg = recv(conn)
-                    print(f"[WM_Central] {ws_id}: {msg.to_text()}")
+                    if msg.op != OpCode.PING:  # heartbeats would flood the log
+                        print(f"[WM_Central] {ws_id}: {msg.to_text()}")
                     send(conn, handle_report(msg, ws_id, table, producer))
             finally:
                 table.set_state(ws_id, WSState.DISCONNECTED)

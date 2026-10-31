@@ -8,7 +8,7 @@ from wm_common import kafka_msgs as km
 from wm_common.cli import host_port
 
 
-def main() -> None:
+def run() -> None:
     parser = argparse.ArgumentParser(prog="WM_Central")
     parser.add_argument("port", type=int, help="port of the socket server for WM_WS_M")
     parser.add_argument(
@@ -44,3 +44,10 @@ def main() -> None:
         target=dashboard.serve, args=(args.http_port, table, producer), daemon=True
     ).start()
     server.serve(args.port, table, producer)
+
+
+def main() -> None:
+    try:
+        run()
+    except KeyboardInterrupt:
+        print("[WM_Central] stopped (Ctrl+C)")
