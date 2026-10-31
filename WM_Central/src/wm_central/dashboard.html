@@ -16,20 +16,33 @@
   body { margin: 0; padding: 16px; background: var(--bg); color: var(--text);
          font: 15px/1.4 system-ui, sans-serif; }
   header { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: baseline;
-           margin-bottom: 16px; }
+           margin-bottom: 12px; }
   h1 { margin: 0; font-size: 22px; }
   h2 { font-size: 16px; margin: 24px 0 8px; }
   #status { color: var(--muted); }
   #status.down { color: var(--red); font-weight: 600; }
 
+  /* admin bar: commands for all stations at once */
+  #admin { display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+           background: var(--card); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; }
+  #admin input { width: 70px; padding: 4px 6px; }
+  #results { color: var(--muted); font-size: 13px; flex-basis: 100%; }
+
   /* one card per station */
   #stations { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
               gap: 12px; }
-  .card { border-radius: 10px; padding: 12px 14px; color: #fff; min-height: 110px; }
+  .card { border-radius: 10px; padding: 12px 14px; color: #fff; min-height: 150px;
+          display: flex; flex-direction: column; }
   .card .id { font-size: 20px; font-weight: 700; }
   .card .loc { opacity: .9; }
   .card .state { margin-top: 6px; font-weight: 600; letter-spacing: .03em; }
-  .card .live { margin-top: 4px; font-variant-numeric: tabular-nums; }
+  /* always reserve these two lines, so a card that starts watering doesn't grow
+     and push the buttons away from under the mouse */
+  .card .live, .card .op { font-variant-numeric: tabular-nums; min-height: 1.4em; }
+  .card .buttons { margin-top: auto; padding-top: 8px; display: flex; gap: 6px; }
+  .card button { flex: 1; color: #fff; background: rgba(255,255,255,.18);
+                 border: 1px solid rgba(255,255,255,.5); }
+  button { padding: 5px 8px; border-radius: 6px; cursor: pointer; font: inherit; font-size: 13px; }
 
   /* the colors from the PDF */
   .AVAILABLE      { background: var(--green); }
@@ -52,6 +65,15 @@
   <span id="status">connecting…</span>
 </header>
 
+<div id="admin">
+  <label>Start for <input id="seconds" type="number" min="1" value="30"> s</label>
+  <strong>All stations:</strong>
+  <button data-cmd="start" data-ws="all">Start</button>
+  <button data-cmd="block" data-ws="all">Block</button>
+  <button data-cmd="activate" data-ws="all">Activate</button>
+  <div id="results">Commands go to one station (buttons on its card) or to all of them.</div>
+</div>
+
 <div id="stations"></div>
 
 <h2>Activation requests</h2>
@@ -72,18 +94,35 @@ function esc(text) {
   return String(text ?? "").replace(/[&<>"']/g, c => "&#" + c.charCodeAt(0) + ";");
 }
 
-function stationCard(s) {
-  let live = "";
-  if (s.state === "WATERING") {
-    live = `<div class="live">${s.flow.toFixed(1)} L/min · ${s.volume.toFixed(2)} L<br>
-            operator ${esc(s.operator_id)}</div>`;
-  }
-  return `<div class="card ${s.state}">
-            <div class="id">${esc(s.id)}</div>
-            <div class="loc">${esc(s.location)}</div>
-            <div class="state">${LABELS[s.state] ?? esc(s.state)}</div>
-            ${live}
-          </div>`;
+// Each card is created ONCE; afterwards only its text and color change.
+// (Rebuilding the buttons every second could swallow a click.)
+const cards = {};
+
+function makeCard(id) {
+  const card = document.createElement("div");
+  card.innerHTML = `
+    <div class="id"></div><div class="loc"></div><div class="state"></div>
+    <div class="live"></div><div class="op"></div>
+    <div class="buttons">
+      <button data-cmd="start" data-ws="${esc(id)}">Start</button>
+      <button data-cmd="block" data-ws="${esc(id)}">Block</button>
+      <button data-cmd="activate" data-ws="${esc(id)}">Activate</button>
+    </div>`;
+  document.getElementById("stations").append(card);
+  return card;
+}
+
+function updateCard(s) {
+  const card = cards[s.id] ??= makeCard(s.id);   // create it the first time only
+  const watering = s.state === "WATERING";
+  card.className = "card " + s.state;            // the state name IS the CSS class
+  // textContent shows text as text (never as HTML), so no escaping is needed here
+  card.querySelector(".id").textContent = s.id;
+  card.querySelector(".loc").textContent = s.location;
+  card.querySelector(".state").textContent = LABELS[s.state] ?? s.state;
+  card.querySelector(".live").textContent =
+    watering ? `${s.flow.toFixed(1)} L/min · ${s.volume.toFixed(2)} L` : "";
+  card.querySelector(".op").textContent = watering ? `operator ${s.operator_id}` : "";
 }
 
 function requestRow(r) {
@@ -95,7 +134,7 @@ async function refresh() {
   const status = document.getElementById("status");
   try {
     const state = await (await fetch("/api/state")).json();
-    document.getElementById("stations").innerHTML = state.stations.map(stationCard).join("");
+    state.stations.forEach(updateCard);
     document.getElementById("requests").innerHTML =
       state.requests.map(requestRow).join("") || `<tr><td colspan="6">none yet</td></tr>`;
     status.className = "";
@@ -106,6 +145,28 @@ async function refresh() {
     status.textContent = "Central unreachable";
   }
 }
+
+// One click listener for ALL buttons, even ones created later (event delegation)
+document.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-cmd]");
+  if (!button) return;
+  let command = `${button.dataset.cmd} ${button.dataset.ws}`;  // e.g. "block WS2"
+  if (button.dataset.cmd === "start") {
+    command += " " + document.getElementById("seconds").value;  // "start WS2 30"
+  }
+  const results = document.getElementById("results");
+  try {
+    const answer = await fetch("/api/command", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ command }),
+    });
+    results.textContent = (await answer.json()).results.join(" · ");
+  } catch (e) {
+    results.textContent = "command failed: Central unreachable";
+  }
+  refresh();  // show the effect right away instead of waiting up to 1 s
+});
 
 refresh();
 setInterval(refresh, 1000);  // the PDF wants real time: ask again every second

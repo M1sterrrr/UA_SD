@@ -41,6 +41,6 @@ def main() -> None:
     ).start()
     threading.Thread(target=admin.console, args=(table, producer), daemon=True).start()
     threading.Thread(
-        target=dashboard.serve, args=(args.http_port, table), daemon=True
+        target=dashboard.serve, args=(args.http_port, table, producer), daemon=True
     ).start()
     server.serve(args.port, table, producer)
