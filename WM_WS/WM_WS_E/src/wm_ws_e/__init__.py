@@ -76,7 +76,8 @@ def water(producer: Producer, msg: dict, me: EngineState) -> None:
     """Runs in its own thread: simulate the flow meter, sending a TELEMETRY
     reading every second, until the time limit, a stop, a fault or a block."""
     ws_id, rid, duration = msg["ws_id"], msg["request_id"], msg["duration"]
-    print(f"[WM_WS_E] VALVE OPEN: request {rid} by {msg['operator_id']}, {duration} s")
+    op = msg["operator_id"]  # in every event, so a restarted FO can recognise its own
+    print(f"[WM_WS_E] VALVE OPEN: request {rid} by {op}, {duration} s")
     me.stop_watering.clear()  # forget an "s" pressed while we weren't watering
     volume, elapsed = 0.0, 0
 
@@ -89,7 +90,7 @@ def water(producer: Producer, msg: dict, me: EngineState) -> None:
         flow = round(random.uniform(18, 22), 1)  # L/min, a slightly noisy sensor
         volume += flow / 60  # litres that flowed during this one second
         km.publish(producer, km.WS_EVENTS, ws_id, km.MsgType.TELEMETRY,
-                   ws_id=ws_id, request_id=rid, flow=flow,
+                   ws_id=ws_id, request_id=rid, operator_id=op, flow=flow,
                    volume=round(volume, 2), elapsed=elapsed)
         print(f"[WM_WS_E] {flow} L/min, {volume:.2f} L ({elapsed}/{duration} s)")
 
@@ -102,7 +103,7 @@ def water(producer: Producer, msg: dict, me: EngineState) -> None:
     else:
         reason = km.EndReason.TIME_LIMIT
     km.publish(producer, km.WS_EVENTS, ws_id, km.MsgType.FINISHED,
-               ws_id=ws_id, request_id=rid, volume=round(volume, 2),
+               ws_id=ws_id, request_id=rid, operator_id=op, volume=round(volume, 2),
                duration=elapsed, reason=reason)
     print(f"[WM_WS_E] VALVE CLOSED ({reason}): {volume:.2f} L in {elapsed} s")
 

@@ -22,7 +22,13 @@ import time
 import uuid
 from enum import StrEnum
 
-from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
+from confluent_kafka import (
+    Consumer,
+    KafkaError,
+    KafkaException,
+    Producer,
+    TopicPartition,
+)
 from confluent_kafka.admin import AdminClient, NewTopic
 
 REQUESTS = "wm.requests"
@@ -135,17 +141,29 @@ def ensure_topics(broker: tuple[str, int]) -> None:
 
 
 def make_consumer(broker: tuple[str, int], name: str, topics: list[str],
-                  timeout: float = 15.0) -> Consumer:
-    """Consumer in a fresh group that only sees messages produced from now on.
+                  timeout: float = 15.0, durable: bool = False) -> Consumer:
+    """durable=False: a fresh group every run, it only sees messages produced from now on.
+    durable=True: the group is always `name`, so Kafka remembers where we stopped
+    reading and, after a restart, first delivers everything we missed.
     Returns once the broker has actually assigned the topics to it."""
     ensure_topics(broker)
     host, port = broker
-    consumer = Consumer({
-        **base_config(broker),
-        "group.id": f"{name}-{uuid.uuid4().hex[:8]}",  # new group every run
-        "auto.offset.reset": "latest",                 # ...starting at the end of the topic
-        "enable.auto.commit": False,                   # throwaway group: nothing to remember
-    })
+    config = {**base_config(broker), "auto.offset.reset": "latest"}  # first run: start at the end
+    if durable:
+        config |= {
+            "group.id": name,
+            # static membership: after a crash the restarted consumer takes its old place
+            # at once, instead of waiting ~45 s for Kafka to declare the old one dead
+            "group.instance.id": name,
+            "enable.auto.commit": True,       # store our reading position...
+            "auto.commit.interval.ms": 1000,  # ...every second
+        }
+    else:
+        config |= {
+            "group.id": f"{name}-{uuid.uuid4().hex[:8]}",  # new group every run
+            "enable.auto.commit": False,                   # throwaway group: nothing to remember
+        }
+    consumer = Consumer(config)
     assigned = []
     consumer.subscribe(topics, on_assign=lambda c, partitions: assigned.append(True))
     deadline = time.monotonic() + timeout
@@ -154,4 +172,13 @@ def make_consumer(broker: tuple[str, int], name: str, topics: list[str],
             consumer.close()  # the caller may retry: don't leak this one
             raise ConnectionError(f"Kafka at {host}:{port} did not assign {topics}")
         consumer.poll(0.2)
+    if durable:
+        # A brand-new group has no stored position yet: if we crashed before the first
+        # auto-commit, the restart would jump to "latest" and skip what we missed.
+        # So store "the end of the topic" as our position straight away.
+        saved = consumer.committed(consumer.assignment(), timeout=10)
+        fresh = [TopicPartition(p.topic, p.partition, consumer.get_watermark_offsets(p)[1])
+                 for p in saved if p.offset < 0]  # negative offset = nothing stored
+        if fresh:
+            consumer.commit(offsets=fresh, asynchronous=False)
     return consumer

@@ -10,6 +10,7 @@ ANSWER_TIMEOUT = 10.0  # seconds to wait for Central's verdict
 SILENCE_TIMEOUT = 5.0  # seconds without telemetry before we stop watching
 STATIONS_WAIT = 3.0  # Central broadcasts the station list every 2 s
 FILE_PAUSE = 4.0  # PDF: wait 4 s after a request concludes before the next one
+CATCH_UP_MAX = 5.0  # at most this long reading what we missed while we were down
 
 
 def next_for_request(consumer: Consumer, request_id: str, seconds: float) -> dict | None:
@@ -64,6 +65,29 @@ def run_request(producer: Producer, consumer: Consumer, operator_id: str,
     print(f"[WM_FO] request {request_id} sent: {ws_id} for {duration} s")
     if wait_for_verdict(consumer, request_id):
         follow_irrigation(consumer, request_id)
+
+
+def catch_up(consumer: Consumer, operator_id: str) -> None:
+    """After a restart Kafka first hands us everything we missed (our group remembers
+    where we stopped reading). Show the results of our irrigations that finished
+    meanwhile, and keep following the ones that are still running."""
+    running = {}  # request_id -> ws_id: ours, started, not FINISHED yet
+    deadline = time.monotonic() + CATCH_UP_MAX
+    # the backlog is read in a burst; a quiet poll means we've reached "now". 1.5 s is
+    # longer than the 1 s telemetry interval, so a watering of ours still running shows up
+    while time.monotonic() < deadline and (msg := km.poll(consumer, 1.5)) is not None:
+        if msg.get("operator_id") != operator_id:
+            continue
+        rid = msg["request_id"]
+        if msg["type"] == km.MsgType.TELEMETRY or msg.get("status") == km.Status.AUTHORIZED:
+            running[rid] = msg["ws_id"]
+        elif msg["type"] == km.MsgType.FINISHED:
+            running.pop(rid, None)
+            print(f"[WM_FO] while you were away: {rid} at {msg['ws_id']} FINISHED "
+                  f"({msg['reason']}): {msg['volume']} L in {msg['duration']} s")
+    for rid, ws_id in running.items():
+        print(f"[WM_FO] {rid} at {ws_id} is still watering, following it")
+        follow_irrigation(consumer, rid)
 
 
 def show_stations(consumer: Consumer) -> None:
@@ -130,11 +154,15 @@ def run() -> None:
     args = parser.parse_args()
 
     producer = km.make_producer(args.broker)
+    # durable: one group per operator, so a restarted FO gets what it missed
+    # (only one FO per operator ID: two would share, and fight over, the same group)
     consumer = km.make_consumer(
-        args.broker, f"fo-{args.operator_id}", [km.FO_NOTIFICATIONS, km.WS_EVENTS]
+        args.broker, f"fo-{args.operator_id}", [km.FO_NOTIFICATIONS, km.WS_EVENTS],
+        durable=True,
     )
     print(f"[WM_FO] operator {args.operator_id}, Kafka at {args.broker}")
     try:
+        catch_up(consumer, args.operator_id)
         show_stations(consumer)
         if args.file:
             run_file(args.file, producer, consumer, args.operator_id)
