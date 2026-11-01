@@ -4,11 +4,13 @@ import sqlite3
 import time
 from collections import deque
 
-from confluent_kafka import Producer
+from confluent_kafka import Consumer, KafkaException, Producer
 
 from wm_central import admin, db
 from wm_central.stations import StationTable
 from wm_common import kafka_msgs as km
+
+RETRY_DELAY = 3.0  # seconds between attempts to reach Kafka
 
 # The last activation requests and their verdicts, shown on the dashboard.
 # deque(maxlen=...) drops the oldest entry by itself; appendleft() is thread-safe.
@@ -115,10 +117,22 @@ def broadcast_stations(table: StationTable, producer: Producer) -> None:
         time.sleep(BROADCAST_INTERVAL)
 
 
+def connect_consumer(broker: tuple[str, int]) -> Consumer:
+    """Kafka may still be starting (or be unreachable for a while): keep trying,
+    like the monitor does with Central. Without this the thread would die and
+    Central would keep running deaf to every request."""
+    while True:
+        try:
+            return km.make_consumer(broker, "central", [km.REQUESTS, km.WS_EVENTS])
+        except (ConnectionError, KafkaException) as e:
+            print(f"[WM_Central] Kafka not reachable ({e}), retrying in {RETRY_DELAY:.0f} s")
+            time.sleep(RETRY_DELAY)
+
+
 def consume(broker: tuple[str, int], table: StationTable, producer: Producer) -> None:
     """Runs in its own thread: read requests and station events forever."""
     db_conn = db.connect()  # this thread's own DB connection
-    consumer = km.make_consumer(broker, "central", [km.REQUESTS, km.WS_EVENTS])
+    consumer = connect_consumer(broker)
     print(f"[WM_Central] listening on Kafka topics {km.REQUESTS}, {km.WS_EVENTS}")
     try:
         while True:

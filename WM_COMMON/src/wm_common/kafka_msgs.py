@@ -108,9 +108,10 @@ def base_config(broker: tuple[str, int]) -> dict:
     host, port = broker
     return {
         "bootstrap.servers": f"{host}:{port}",
-        # only real errors: while Kafka is down the library retries by itself,
-        # and its info messages about every retry (level 6) would flood the screen
-        "log_level": 3,
+        # only critical messages: while Kafka is down the library retries by itself
+        # and logs every failed attempt as an error (level 3), ~20 lines a second.
+        # Our own code reports what matters (timeouts, retries) through exceptions.
+        "log_level": 2,
     }
 
 
@@ -124,7 +125,8 @@ def ensure_topics(broker: tuple[str, int]) -> None:
     admin = AdminClient(base_config(broker))
     wanted = [NewTopic(t, num_partitions=1, replication_factor=1)
               for t in (REQUESTS, WS_COMMANDS, WS_EVENTS, FO_NOTIFICATIONS)]
-    for future in admin.create_topics(wanted).values():
+    # without a timeout this waits silently for as long as Kafka is down
+    for future in admin.create_topics(wanted, request_timeout=10).values():
         try:
             future.result()  # wait for the broker's answer
         except KafkaException as e:
@@ -149,6 +151,7 @@ def make_consumer(broker: tuple[str, int], name: str, topics: list[str],
     deadline = time.monotonic() + timeout
     while not assigned:  # on_assign is called from inside poll()
         if time.monotonic() > deadline:
+            consumer.close()  # the caller may retry: don't leak this one
             raise ConnectionError(f"Kafka at {host}:{port} did not assign {topics}")
         consumer.poll(0.2)
     return consumer

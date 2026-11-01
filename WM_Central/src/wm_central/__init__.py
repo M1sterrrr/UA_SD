@@ -2,7 +2,7 @@ import argparse
 import os
 import threading
 
-from wm_central import admin, dashboard, db, kafka_handler, server
+from wm_central import admin, dashboard, db, kafka_handler, seed, server
 from wm_central.stations import StationTable
 from wm_common import kafka_msgs as km
 from wm_common.cli import host_port
@@ -10,9 +10,15 @@ from wm_common.cli import host_port
 
 def run() -> None:
     parser = argparse.ArgumentParser(prog="WM_Central")
-    parser.add_argument("port", type=int, help="port of the socket server for WM_WS_M")
+    # Both may also come from the environment: AWS ECS starts the container with
+    # environment variables, not with command-line arguments
     parser.add_argument(
-        "broker", type=host_port, help="Kafka bootstrap server HOST:PORT"
+        "port", type=int, nargs="?", default=os.environ.get("WM_SOCKET_PORT", "5500"),
+        help="port of the socket server for WM_WS_M (default: $WM_SOCKET_PORT or 5500)",
+    )
+    parser.add_argument(
+        "broker", type=host_port, nargs="?", default=os.environ.get("WM_KAFKA"),
+        help="Kafka bootstrap server HOST:PORT (default: $WM_KAFKA)",
     )
     parser.add_argument(
         "--http-port",
@@ -21,8 +27,12 @@ def run() -> None:
         help="port of the web dashboard (default: $PORT or 8080)",
     )
     args = parser.parse_args()
+    if args.broker is None:
+        parser.error("no Kafka broker: pass HOST:PORT or set WM_KAFKA")
 
     conn = db.connect()
+    if not db.list_stations(conn):  # brand-new database (e.g. a fresh cloud container)
+        seed.main()
     table = StationTable(db.list_stations(conn))
     conn.close()
     print(f"[WM_Central] database {db.DB_PATH} loaded")

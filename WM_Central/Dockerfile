@@ -9,7 +9,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 # The whole workspace: wm-central needs wm-common, and uv.lock pins every version
 COPY . .
-RUN uv sync --frozen --no-dev --package wm-central
+RUN uv sync --frozen --no-dev --package wm-central && mkdir -p /data
 
 # The database lives in a volume, so it survives when the container is replaced
 VOLUME /data
