@@ -1,3 +1,5 @@
+# Pakiet wm-ws-e. [project.scripts] tworzy komendę WM_WS_E -> funkcja main() z wm_ws_e/__init__.py
+# (dlatego działa "uv run WM_WS_E ..."). wm-common pochodzi z tego samego workspace'u (tool.uv.sources).
 [project]
 name = "wm-ws-e"
 version = "0.1.0"

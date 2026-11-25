@@ -1,10 +1,14 @@
 <!doctype html>
+<!-- Strona dashboardu Central, serwowana przez dashboard.py pod adresem "/". -->
+<!-- Co sekundę pobiera /api/state i odświeża karty stacji oraz tabelę próśb; -->
+<!-- przyciski wysyłają komendy (start/block/activate) jako POST /api/command. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WaterManagement Central</title>
 <style>
+  /* kolory jako zmienne CSS; w ciemnym motywie systemu podmieniają się same */
   :root {
     --bg: #f4f6f8; --card: #ffffff; --text: #1d2730; --muted: #66727d; --line: #dde3e8;
     --green: #2e9e4f; --red: #d23b3b; --orange: #e8890c; --gray: #9aa4ad;
@@ -44,6 +48,7 @@
                  border: 1px solid rgba(255,255,255,.5); }
   button { padding: 5px 8px; border-radius: 6px; cursor: pointer; font: inherit; font-size: 13px; }
 
+  /* nazwa stanu stacji = klasa CSS karty (ustawia ją updateCard w JS) */
   /* the colors from the PDF */
   .AVAILABLE      { background: var(--green); }
   .WATERING       { background: var(--green); animation: blink 1s infinite; }
@@ -86,18 +91,24 @@
 </div>
 
 <script>
+// czytelne nazwy stanów wyświetlane na kartach
 const LABELS = { AVAILABLE: "Available", WATERING: "Watering", LEAK: "Leak",
                  OUT_OF_SERVICE: "Out of Service", DISCONNECTED: "Disconnected" };
 
 // Text from the server goes into HTML, so escape it (never trust data as markup)
+// zamienia znaki specjalne HTML na encje (ochrona przed wstrzyknięciem HTML/XSS);
+// używana w makeCard i requestRow
 function esc(text) {
   return String(text ?? "").replace(/[&<>"']/g, c => "&#" + c.charCodeAt(0) + ";");
 }
 
 // Each card is created ONCE; afterwards only its text and color change.
 // (Rebuilding the buttons every second could swallow a click.)
+// mapa: id stacji -> element karty (każda karta powstaje tylko raz)
 const cards = {};
 
+// tworzy kartę stacji z trzema przyciskami; data-cmd i data-ws mówią, jaką komendę
+// wysłać. Wołana z updateCard, gdy stacja pojawia się pierwszy raz
 function makeCard(id) {
   const card = document.createElement("div");
   card.innerHTML = `
@@ -112,6 +123,8 @@ function makeCard(id) {
   return card;
 }
 
+// odświeża jedną kartę danymi z /api/state: kolor (klasa = stan), nazwa, lokalizacja,
+// a podczas podlewania przepływ, objętość i operator
 function updateCard(s) {
   const card = cards[s.id] ??= makeCard(s.id);   // create it the first time only
   const watering = s.state === "WATERING";
@@ -125,11 +138,14 @@ function updateCard(s) {
   card.querySelector(".op").textContent = watering ? `operator ${s.operator_id}` : "";
 }
 
+// jeden wiersz tabeli "Activation requests" (dane z kafka_handler.recent_requests)
 function requestRow(r) {
   return `<tr><td>${esc(r.time)}</td><td>${esc(r.request_id)}</td><td>${esc(r.operator_id)}</td>
           <td>${esc(r.ws_id)}</td><td>${esc(r.duration)}</td><td>${esc(r.verdict)}</td></tr>`;
 }
 
+// pobiera GET /api/state i odświeża karty, tabelę i pasek statusu; gdy Central
+// nie odpowiada, pokazuje "Central unreachable"
 async function refresh() {
   const status = document.getElementById("status");
   try {
@@ -147,6 +163,8 @@ async function refresh() {
 }
 
 // One click listener for ALL buttons, even ones created later (event delegation)
+// obsługa kliknięć WSZYSTKICH przycisków: składa tekst komendy (np. "start WS2 30"),
+// wysyła POST /api/command i pokazuje wyniki pod paskiem admina
 document.addEventListener("click", async (event) => {
   const button = event.target.closest("button[data-cmd]");
   if (!button) return;
@@ -168,6 +186,7 @@ document.addEventListener("click", async (event) => {
   refresh();  // show the effect right away instead of waiting up to 1 s
 });
 
+// pierwsze odświeżenie od razu, potem co 1 s (setInterval)
 refresh();
 setInterval(refresh, 1000);  // the PDF wants real time: ask again every second
 </script>

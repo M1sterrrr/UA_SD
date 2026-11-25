@@ -1,3 +1,7 @@
+# Silnik stacji (WM_WS_E) – symuluje zawór i przepływomierz. Dwa kanały: gniazdo do
+# swojego monitora (odpowiada na IDENTIFY i HEALTH) oraz Kafka (czyta komendy
+# START/STOP/BLOCK/ACTIVATE z wm.ws.commands, wysyła TELEMETRY co 1 s i FINISHED do
+# wm.ws.events). Menu z klawiatury: w (poproś o podlewanie), s (stop), f (awaria).
 import argparse
 import random
 import socket
@@ -11,6 +15,10 @@ from wm_common.cli import host_port
 from wm_common.messages import Message, OpCode, recv, send
 
 
+# Wspólny stan wątków silnika. threading.Event to bezpieczna wątkowo flaga
+# (set/clear/is_set/wait): fault = awaria z menu "f", stop_watering = przerwij podlewanie,
+# out_of_service = zablokowany przez Central (BLOCK, aż do ACTIVATE).
+# ws_id i lokalizację ustawia monitor wiadomością IDENTIFY.
 class EngineState:
     """Everything the engine's threads share."""
 
@@ -28,6 +36,8 @@ MENU = ("[WM_WS_E] menu: w <operator_id> <seconds> = water (e.g. w OP1 30), "
         "s = stop watering, f = toggle simulated fault")
 
 
+# Menu "w OP1 30": silnik prosi Central o podlewanie dokładnie tak jak FO
+# (IRRIGATION_REQUEST w wm.requests). Jeśli Central się zgodzi, przyśle zwykły START.
 def request_watering(producer: Producer, me: EngineState, words: list[str]) -> None:
     """Menu "w OP1 30": ask Central for an irrigation, exactly like the FO app does.
     Central checks it and, if authorized, sends us a normal START."""
@@ -47,6 +57,8 @@ def request_watering(producer: Producer, me: EngineState, words: list[str]) -> N
     print(f"[WM_WS_E] request {request_id} sent to Central: {duration} s for {operator_id}")
 
 
+# Wątek menu klawiatury: w = request_watering, f = włącz/wyłącz awarię (włączenie
+# przerywa też podlewanie, a monitor zobaczy KO przy następnym HEALTH), s = stop.
 def keyboard_loop(me: EngineState, producer: Producer) -> None:
     """Runs in its own thread: the station's local menu."""
     print(MENU)
@@ -72,6 +84,10 @@ def keyboard_loop(me: EngineState, producer: Producer) -> None:
             print(MENU)
 
 
+# Wątek jednego podlewania (startuje go handle_command po START): co sekundę losuje
+# przepływ 18–22 L/min, sumuje objętość i publikuje TELEMETRY. Kończy się po czasie,
+# po stopie, awarii albo blokadzie i publikuje FINISHED z powodem
+# (TIME_LIMIT/STOPPED/LEAK/BLOCKED). Czytają to Central (handle_*) i FO.
 def water(producer: Producer, msg: dict, me: EngineState) -> None:
     """Runs in its own thread: simulate the flow meter, sending a TELEMETRY
     reading every second, until the time limit, a stop, a fault or a block."""
@@ -108,6 +124,9 @@ def water(producer: Producer, msg: dict, me: EngineState) -> None:
     print(f"[WM_WS_E] VALVE CLOSED ({reason}): {volume:.2f} L in {elapsed} s")
 
 
+# Reakcja na jedną wiadomość Kafki dla naszej stacji: START -> nowy wątek water(),
+# STOP -> stop_watering, BLOCK -> out_of_service + stop, ACTIVATE -> koniec blokady,
+# REQUEST_STATUS -> wypisuje werdykt Central dla prośby o naszą stację.
 def handle_command(msg: dict, producer: Producer, me: EngineState) -> None:
     if msg["type"] == km.MsgType.START:
         # water in a separate thread, so we keep reading commands meanwhile
@@ -130,6 +149,9 @@ def handle_command(msg: dict, producer: Producer, me: EngineState) -> None:
         print(f"[WM_WS_E] command {msg['type']} not implemented yet")
 
 
+# Wątek Kafki: czyta wm.ws.commands i wm.fo.notifications, zostawia tylko wiadomości
+# z naszym ws_id (dopóki monitor nas nie zidentyfikuje – żadnych) i przekazuje je do
+# handle_command. Kończy się, gdy run() ustawi zdarzenie `stop`.
 def command_loop(consumer: Consumer, producer: Producer, me: EngineState,
                  stop: threading.Event) -> None:
     """Runs in its own thread: read commands and request answers, keep only ours.
@@ -147,6 +169,8 @@ def command_loop(consumer: Consumer, producer: Producer, me: EngineState,
         consumer.close()
 
 
+# Rozmowa z monitorem: IDENTIFY -> zapamiętuje ws_id i lokalizację, odpowiada OK;
+# HEALTH -> OK albo KO (gdy jest awaria). Działa, aż monitor się rozłączy (ConnectionError).
 def monitor_loop(sock: socket.socket, me: EngineState) -> None:
     """Answer the monitor's IDENTIFY and HEALTH requests until it disconnects."""
     while True:
@@ -161,6 +185,10 @@ def monitor_loop(sock: socket.socket, me: EngineState) -> None:
             send(sock, Message(OpCode.KO, ["unknown request"]))
 
 
+# Start silnika: argumenty (broker, adres monitora), producent, wątek klawiatury,
+# konsument Kafki i jego wątek (najpierw Kafka, żeby START nie przepadł), potem w pętli
+# łączenie z monitorem. Po utracie monitora zamyka zawór (stop_watering) i co 3 s
+# próbuje połączyć się ponownie.
 def run() -> None:
     parser = argparse.ArgumentParser(prog="WM_WS_E")
     parser.add_argument("broker", type=host_port, help="Kafka bootstrap server HOST:PORT")
@@ -204,6 +232,7 @@ def run() -> None:
         kafka_thread.join(timeout=3)
 
 
+# Funkcja uruchamiana komendą WM_WS_E; Ctrl+C kończy program z komunikatem.
 def main() -> None:
     try:
         run()

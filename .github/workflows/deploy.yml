@@ -1,3 +1,6 @@
+# GitHub Actions (CI/CD wg Tutorial_AWS_Labs): przy każdym push na main buduje obraz
+# WM_Central i wysyła go na Docker Hub jako <użytkownik>/practica-aws:latest.
+# AWS ECS pobiera ten obraz; nową wersję włącza się ręcznie w ECS ("Forzar nueva implementación").
 name: Build and Push to Docker Hub
 on:
   push:
@@ -7,13 +10,16 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # pobiera kod repozytorium na maszynę GitHuba
       - name: Checkout del código
         uses: actions/checkout@v3
+      # loguje się do Docker Hub sekretami DOCKER_USERNAME / DOCKER_PASSWORD (Settings > Secrets)
       - name: Iniciar sesión en Docker Hub
         uses: docker/login-action@v2
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
+      # buduje obraz z WM_Central/Dockerfile (kontekst = całe repo) i wysyła go (push)
       - name: Construir y subir imagen
         uses: docker/build-push-action@v4
         with:

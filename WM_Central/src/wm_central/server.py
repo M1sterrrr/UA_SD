@@ -1,3 +1,7 @@
+# Serwer gniazd Central dla monitorów (WM_WS_M); każdy monitor dostaje własny wątek.
+# Przebieg połączenia: AUTH#<ws_id> -> sprawdzenie w bazie -> OK#<lokalizacja>,
+# potem w pętli PING (co 2 s), LEAK albo RECOVERED. Cisza dłuższa niż 6 s
+# = monitor zniknął -> stacja DISCONNECTED.
 """CENTRAL's socket server: one thread per connected WM_WS_M."""
 import socket
 import sqlite3
@@ -15,6 +19,8 @@ AUTH_TIMEOUT = 10.0  # a monitor must authenticate within this many seconds
 MONITOR_TIMEOUT = 6.0  # monitors PING every 2 s: ~3 missed in a row = disconnected
 
 
+# Pierwsza wiadomość musi być AUTH#<ws_id>, a ID musi istnieć w bazie (db.get_station).
+# Zwraca wiersz stacji albo wysyła KO i zwraca None. Wołana z handle_monitor().
 def authenticate(conn: socket.socket) -> sqlite3.Row | None:
     """First message must be AUTH#<ws_id> with an ID that exists in the DB.
     Returns the station's DB row if valid; sends KO and returns None if not."""
@@ -36,12 +42,17 @@ def authenticate(conn: socket.socket) -> sqlite3.Row | None:
     return station
 
 
+# Która wiadomość monitora ustawia jaki stan stacji (używa tego handle_report).
 REPORT_STATES = {
     OpCode.LEAK: WSState.LEAK,
     OpCode.RECOVERED: WSState.AVAILABLE,
 }
 
 
+# Obsługuje jedną wiadomość od uwierzytelnionego monitora i zwraca odpowiedź:
+# PING -> OK (samo dotarcie dowodzi, że monitor żyje), LEAK/RECOVERED -> table.set_state.
+# Jeśli awaria (LEAK) przyszła w trakcie podlewania, wysyła przez Kafkę STOP do
+# silnika (wm.ws.commands), żeby na pewno zamknął zawór.
 def handle_report(
     msg: Message, ws_id: str, table: StationTable, producer: Producer
 ) -> Message:
@@ -59,6 +70,10 @@ def handle_report(
     return Message(OpCode.OK)
 
 
+# Ciało wątku jednego monitora, od połączenia do rozłączenia: authenticate ->
+# table.connect (odrzuca drugi monitor z tym samym ID) -> OK#lokalizacja -> pętla
+# recv / handle_report / send. Blok finally zawsze ustawia DISCONNECTED, gdy połączenie
+# się skończy (rozłączenie, błąd albo timeout).
 def handle_monitor(
     conn: socket.socket, addr: tuple, table: StationTable, producer: Producer
 ) -> None:
@@ -91,6 +106,9 @@ def handle_monitor(
             print(f"[WM_Central] connection from {addr} closed ({e})")
 
 
+# Główna pętla Central (wątek główny): nasłuchuje na porcie (domyślnie 5500) i dla
+# każdego nowego monitora startuje wątek handle_monitor. SO_REUSEADDR pozwala od razu
+# ponownie zająć port po restarcie programu.
 def serve(port: int, table: StationTable, producer: Producer) -> None:
     """Accept monitors forever, each one in a new thread."""
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

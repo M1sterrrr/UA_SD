@@ -1,3 +1,5 @@
+# Główny plik workspace'u uv: łączy 5 pakietów (members) w jedno środowisko .venv
+# i jeden plik uv.lock. "uv sync" instaluje je wszystkie (plus grupę dev: pytest, ruff).
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",

@@ -1,3 +1,4 @@
+# Konfiguracja pyrefly (sprawdzanie typów w edytorze): interpreter z .venv i katalogi src pakietów.
 python-interpreter-path = ".venv/bin/python"
 search-path = [
     "WM_COMMON/src",

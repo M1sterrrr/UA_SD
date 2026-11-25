@@ -1,3 +1,8 @@
+# Strona KAFKI w protokole – wspólna dla wszystkich aplikacji: nazwy tematów, typy
+# wiadomości, kodowanie JSON, tworzenie producentów i konsumentów. Kafka działa jak
+# "skrzynka pocztowa" pośrodku: nadawca publikuje wiadomość w temacie, a każdy, kto
+# subskrybuje ten temat, ją czyta – nadawca i odbiorca nie muszą się znać ani działać
+# w tym samym momencie. Tabelka w docstringu niżej mówi, kto pisze i kto czyta każdy temat.
 """Kafka side of the protocol: topics, message types, JSON encoding, client setup.
 
 Topic               Key          Producer        Consumer            Message types
@@ -31,12 +36,15 @@ from confluent_kafka import (
 )
 from confluent_kafka.admin import AdminClient, NewTopic
 
+# Nazwy 4 tematów. Kluczem wiadomości jest zwykle ws_id (dla powiadomień operator_id).
 REQUESTS = "wm.requests"
 WS_COMMANDS = "wm.ws.commands"
 WS_EVENTS = "wm.ws.events"
 FO_NOTIFICATIONS = "wm.fo.notifications"
 
 
+# Pole "type" w każdym JSON-ie – po nim odbiorca wybiera, co zrobić
+# (np. kafka_handler.consume w Central, handle_command w silniku, pętle w FO).
 class MsgType(StrEnum):
     # wm.requests
     IRRIGATION_REQUEST = "IRRIGATION_REQUEST"  # request_id, operator_id, ws_id, duration
@@ -53,6 +61,8 @@ class MsgType(StrEnum):
     STATIONS = "STATIONS"                      # stations: [{id, location, state}, ...]
 
 
+# Etapy odpowiedzi Central na prośbę: RECEIVED -> AUTHORIZED albo DENIED.
+# Wysyła kafka_handler.notify(); czyta FO (wait_for_verdict) i silnik (handle_command).
 class Status(StrEnum):
     """The "status" field of REQUEST_STATUS."""
 
@@ -61,6 +71,8 @@ class Status(StrEnum):
     DENIED = "DENIED"          # a check failed; "reason" says which
 
 
+# Dlaczego podlewanie się skończyło – pole "reason" w FINISHED, ustawiane w water()
+# w silniku. Central (handle_finished) przy LEAK zostawia stację w stanie LEAK.
 class EndReason(StrEnum):
     """The "reason" field of FINISHED."""
 
@@ -70,11 +82,14 @@ class EndReason(StrEnum):
     BLOCKED = "BLOCKED"        # Central put the station out of service
 
 
+# Słownik pól -> bajty JSON z dopisanym polem "type". Używana przez publish().
 def encode(msg_type: MsgType, **fields) -> bytes:
     """encode(MsgType.STOP, ws_id="WS1") -> b'{"type": "STOP", "ws_id": "WS1"}'"""
     return json.dumps({"type": msg_type, **fields}).encode()
 
 
+# Bajty JSON -> słownik; "type" zamieniany na MsgType (nieznany typ -> ValueError).
+# Używana przez poll().
 def decode(raw: bytes) -> dict:
     """The reverse of encode(). Raises ValueError on bad JSON or an unknown type."""
     msg = json.loads(raw)
@@ -82,12 +97,19 @@ def decode(raw: bytes) -> dict:
     return msg
 
 
+# Wysyła jedną wiadomość do tematu i czeka (flush), aż Kafka ją zapisze – wiadomość
+# na pewno wyszła, zanim program pójdzie dalej. Wołają ją wszyscy nadawcy: Central
+# (notify, START, STOP, BLOCK, ACTIVATE, STATIONS), silnik (TELEMETRY, FINISHED,
+# prośba z menu "w") i FO (IRRIGATION_REQUEST).
 def publish(producer: Producer, topic: str, key: str, msg_type: MsgType, **fields) -> None:
     """Send one message and wait until Kafka has stored it."""
     producer.produce(topic, key=key, value=encode(msg_type, **fields))
     producer.flush()
 
 
+# Czeka max `timeout` s na następną wiadomość; zwraca ją zdekodowaną albo None.
+# Błędy Kafki i "śmieci" są pomijane, więc pętle wywołujące nie muszą ich obsługiwać.
+# Używają jej: kafka_handler.consume (Central), command_loop (silnik) i pętle FO.
 def poll(consumer: Consumer, timeout: float = 1.0) -> dict | None:
     """Wait up to `timeout` s for the next message. Returns it decoded, or None if
     nothing arrived (empty, Kafka errors and garbage messages are skipped too)."""
@@ -104,11 +126,16 @@ def poll(consumer: Consumer, timeout: float = 1.0) -> dict | None:
         return None
 
 
+# Losowe 8-znakowe ID prośby. Każda odpowiedź (REQUEST_STATUS, START, TELEMETRY,
+# FINISHED) niesie to ID, więc FO wie, które wiadomości dotyczą jego prośby.
+# Tworzą je: FO (run_request), admin.start w Central i menu "w" silnika.
 def new_request_id() -> str:
     """Short unique ID that links a request to all its replies."""
     return uuid.uuid4().hex[:8]
 
 
+# Wspólne ustawienia klienta Kafki: adres brokera + wyciszenie logów biblioteki.
+# Używana przez make_producer, ensure_topics i make_consumer.
 def base_config(broker: tuple[str, int]) -> dict:
     """Settings every Kafka client of ours shares."""
     host, port = broker
@@ -121,10 +148,14 @@ def base_config(broker: tuple[str, int]) -> dict:
     }
 
 
+# Tworzy producenta (nadawcę). Każda aplikacja tworzy jednego przy starcie
+# (Central, silnik, FO) i przekazuje go wszędzie, gdzie trzeba coś opublikować.
 def make_producer(broker: tuple[str, int]) -> Producer:
     return Producer(base_config(broker))
 
 
+# Tworzy nasze 4 tematy przez AdminClient, jeśli jeszcze nie istnieją
+# (błąd TOPIC_ALREADY_EXISTS jest ignorowany). Wołana na początku make_consumer().
 def ensure_topics(broker: tuple[str, int]) -> None:
     """Create our topics if they don't exist yet. A consumer can't subscribe to a
     topic that was never created (only producers create topics automatically)."""
@@ -140,6 +171,12 @@ def ensure_topics(broker: tuple[str, int]) -> None:
                 raise
 
 
+# Tworzy konsumenta (odbiorcę) i subskrybuje tematy. Czeka, aż broker naprawdę
+# przydzieli partycje (inaczej pierwsze wiadomości mogłyby przepaść); po `timeout` s
+# rzuca ConnectionError (Central łapie go i ponawia w connect_consumer).
+# durable=False (Central "central", silnik "engine"): nowa grupa przy każdym starcie,
+# czyta tylko wiadomości od teraz. durable=True (FO "fo-OP1"): stała grupa, Kafka
+# pamięta pozycję czytania, więc po restarcie FO dostaje to, co przegapił (catch_up).
 def make_consumer(broker: tuple[str, int], name: str, topics: list[str],
                   timeout: float = 15.0, durable: bool = False) -> Consumer:
     """durable=False: a fresh group every run, it only sees messages produced from now on.

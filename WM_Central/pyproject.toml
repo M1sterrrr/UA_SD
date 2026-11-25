@@ -1,3 +1,5 @@
+# Pakiet wm-central. [project.scripts] tworzy komendę WM_Central -> funkcja main() z wm_central/__init__.py
+# (dlatego działa "uv run WM_Central ..."). wm-common pochodzi z tego samego workspace'u (tool.uv.sources).
 [project]
 name = "wm-central"
 version = "0.1.0"

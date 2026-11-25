@@ -1,8 +1,12 @@
+# Wypełnia bazę przykładowymi stacjami i operatorami. Uruchamiane na trzy sposoby:
+# ręcznie (uv run python -m wm_central.seed), przez usługę "seed" w docker-compose.yml
+# oraz automatycznie z run() w __init__.py, gdy baza jest pusta (np. świeży kontener na AWS).
 """Fill the database with sample data.  Run: uv run python -m wm_central.seed"""
 import sqlite3
 
 from wm_central import db
 
+# Dane przykładowe: (ID, lokalizacja) stacji i niżej (ID, imię i nazwisko) operatorów.
 STATIONS = [
     ("WS1", "Błonia Południe"),
     ("WS2", "Błonia Północ"),
@@ -19,6 +23,8 @@ OPERATORS = [
 ]
 
 
+# Wstawia każdą stację i każdego operatora; istniejące ID są pomijane (IntegrityError),
+# więc skrypt można bezpiecznie uruchamiać wiele razy.
 def main() -> None:
     conn = db.connect()
     for ws_id, location in STATIONS:

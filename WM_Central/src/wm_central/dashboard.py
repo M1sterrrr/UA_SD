@@ -1,3 +1,7 @@
+# Dashboard WWW Central (domyślnie port 8080). Serwuje stronę dashboard.html, która co
+# sekundę pyta GET /api/state (stan stacji + ostatnie prośby), a przyciski wysyła jako
+# POST /api/command (te same komendy co konsola admina). Tylko biblioteka standardowa
+# (http.server), bez frameworka.
 """CENTRAL's web dashboard: one HTML page, a JSON endpoint it polls every second,
 and a command endpoint for its buttons."""
 
@@ -15,6 +19,9 @@ from wm_common.states import WSState
 PAGE = Path(__file__).with_name("dashboard.html")  # lives next to this file
 
 
+# Tworzy klasę obsługującą żądania HTTP. Serwer tworzy nowy obiekt Handler dla
+# każdego żądania, więc wspólne obiekty (tabela, producent, czas startu) są przekazywane
+# przez domknięcie (closure), a nie przez konstruktor.
 def make_handler(
     table: StationTable, producer: Producer, started: float
 ) -> type[BaseHTTPRequestHandler]:
@@ -23,6 +30,8 @@ def make_handler(
     this closure."""
 
     class Handler(BaseHTTPRequestHandler):
+        # GET "/" -> plik HTML; GET "/api/state" -> JSON z czasem działania, liczbą
+        # połączonych stacji, table.details() i kafka_handler.recent_requests; inne -> 404.
         def do_GET(self) -> None:
             if self.path == "/":
                 self.reply(200, "text/html; charset=utf-8", PAGE.read_bytes())
@@ -41,6 +50,8 @@ def make_handler(
             else:
                 self.reply(404, "text/plain", b"not found")
 
+        # POST /api/command z JSON-em {"command": "block WS2"}: przekazuje tekst do
+        # admin.run_command (dokładnie jak konsola) i odsyła listę wyników. Zły JSON -> 400.
         def do_POST(self) -> None:
             """The buttons: {"command": "block WS2"} -> {"results": ["WS2: blocked"]}"""
             if self.path != "/api/command":
@@ -59,6 +70,7 @@ def make_handler(
                 print(f"[WM_Central] dashboard: {result}")
             self.reply(200, "application/json", json.dumps({"results": results}).encode())
 
+        # Pomocnik: wysyła kod statusu, nagłówki (typ i długość treści) i samą treść.
         def reply(self, code: int, content_type: str, body: bytes) -> None:
             self.send_response(code)
             self.send_header("Content-Type", content_type)
@@ -66,12 +78,15 @@ def make_handler(
             self.end_headers()
             self.wfile.write(body)
 
+        # Nadpisane, żeby serwer nie wypisywał linii przy każdym żądaniu (strona pyta co sekundę).
         def log_message(self, format: str, *args) -> None:
             pass  # don't print a line for every request (the page asks every second)
 
     return Handler
 
 
+# Wątek dashboardu (startowany w run()): ThreadingHTTPServer obsługuje każde żądanie
+# w osobnym wątku i działa w nieskończoność.
 def serve(port: int, table: StationTable, producer: Producer) -> None:
     """Runs in its own thread. ThreadingHTTPServer answers each request in a new thread."""
     handler = make_handler(table, producer, time.monotonic())

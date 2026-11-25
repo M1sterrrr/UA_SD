@@ -1,3 +1,6 @@
+# Cały system na jednym komputerze: Kafka, jednorazowy seed bazy, Central i dwie stacje
+# (WS2 i WS3 – każda to monitor + silnik), a operator FO uruchamiany na żądanie.
+# Kolejność startu wymuszają depends_on i healthcheck Kafki.
 # The whole WaterManagement system on one machine.
 #   Start everything:   docker compose up -d --build
 #   Only Kafka:         docker compose up -d kafka      (for running the apps with uv run)
@@ -6,6 +9,8 @@
 #   Stop everything:    docker compose down
 # Containers reach each other by SERVICE NAME (kafka, central, monitor-ws2, ...).
 services:
+  # Broker Kafka (oficjalny obraz Apache, tryb KRaft – bez ZooKeepera). Port 9092 jest
+  # wystawiony na hosta dla aplikacji uruchamianych przez "uv run".
   kafka:
     image: apache/kafka:4.0.0
     container_name: wm-kafka
@@ -37,6 +42,8 @@ services:
       timeout: 10s
       retries: 12
 
+  # Usługa jednorazowa: uruchamia wm_central.seed na wolumenie wm-data i się kończy.
+  # Central startuje dopiero, gdy seed zakończy się sukcesem.
   # Runs once, fills the database, exits. Safe to repeat: existing rows are skipped.
   seed:
     image: wm-central
@@ -45,6 +52,8 @@ services:
     volumes:
       - wm-data:/data
 
+  # Central: gniazdo 5500 dla monitorów, dashboard http://localhost:8080. stdin_open + tty
+  # pozwalają pisać komendy admina po "docker compose attach central".
   central:
     image: wm-central
     build: { context: ., dockerfile: WM_Central/Dockerfile }
@@ -60,6 +69,8 @@ services:
       kafka: { condition: service_healthy }
       seed: { condition: service_completed_successfully }
 
+  # Stacja = para kontenerów: monitor (łączy się z central:5500, nasłuchuje na 6001)
+  # i silnik (łączy się z monitor-ws2:6001 i z Kafką kafka:19092).
   # ---- Station WS2: a monitor + its engine
   monitor-ws2:
     image: wm-ws-m
@@ -74,6 +85,7 @@ services:
     depends_on:
       kafka: { condition: service_healthy }
 
+  # Druga stacja z tych samych obrazów – zmieniają się tylko argumenty (WS3, monitor-ws3).
   # ---- Station WS3: same images, different arguments
   monitor-ws3:
     image: wm-ws-m
@@ -88,6 +100,8 @@ services:
     depends_on:
       kafka: { condition: service_healthy }
 
+  # FO jest interaktywny, więc ma profil "tools" i NIE startuje z "up";
+  # uruchamia się go ręcznie: docker compose run --rm fo
   # ---- Operator: interactive, so it is not started by `up`. Use: docker compose run --rm fo
   fo:
     image: wm-fo
@@ -97,5 +111,7 @@ services:
     depends_on:
       kafka: { condition: service_healthy }
 
+# Nazwany wolumen z plikiem bazy SQLite Central; "docker compose down -v" go kasuje
+# (następny start = świeża baza z seeda).
 volumes:
   wm-data:  # Central's SQLite file; survives `docker compose down` (not `down -v`)

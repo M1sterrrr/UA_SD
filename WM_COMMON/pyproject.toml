@@ -1,3 +1,4 @@
+# Pakiet wm-common (kod wspólny). Jedyna zewnętrzna zależność: confluent-kafka (klient Kafki).
 [project]
 name = "wm-common"
 version = "0.1.0"

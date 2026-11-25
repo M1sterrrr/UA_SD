@@ -1,3 +1,7 @@
+# Monitor stacji (WM_WS_M) – "strażnik" jednej stacji. Jest KLIENTEM Central (gniazdo:
+# AUTH, PING co 2 s, LEAK/RECOVERED) i SERWEREM dla swojego silnika (gniazdo: IDENTIFY,
+# potem HEALTH co 1 s). Gdy silnik odpowie KO albo zamilknie, monitor zgłasza Central
+# awarię (LEAK). Monitor w ogóle nie używa Kafki.
 import argparse
 import socket
 import sys
@@ -14,11 +18,15 @@ PING_INTERVAL = 2.0    # heartbeat to Central (Central drops us after ~3 missed 
 RETRY_DELAY = 3.0      # seconds between reconnection attempts
 
 
+# Połączenie monitora z Central. Używają go dwa wątki naraz: heartbeat_loop (PING)
+# i główny wątek pilnujący silnika (LEAK/RECOVERED), więc każda wymiana
+# wiadomość–odpowiedź odbywa się pod jedną blokadą – odpowiedzi się nie pomieszają.
 class CentralLink:
     """The monitor's connection to CENTRAL. It authenticates, sends a heartbeat,
     and reconnects by itself whenever the connection breaks. Two threads use it
     (heartbeat + engine watcher), so every exchange happens under one lock."""
 
+    # Zapamiętuje adres Central i ID stacji; samo połączenie powstaje dopiero w connect().
     def __init__(self, address: tuple[str, int], ws_id: str) -> None:
         self.address = address
         self.ws_id = ws_id
@@ -27,6 +35,11 @@ class CentralLink:
         self.location = ""
         self.healthy: bool | None = None  # last engine health we know (None = no engine)
 
+    # Łączy się z Central i wysyła AUTH#<ws_id>, ponawiając co 3 s, aż Central odpowie
+    # OK#<lokalizacja>. KO "already connected" -> czekamy, aż Central zapomni stare połączenie;
+    # inne KO (nieznana stacja) -> koniec programu. Po połączeniu, jeśli silnik jest zdrowy,
+    # od razu wysyła RECOVERED (Central startuje stację jako LEAK).
+    # Wołana z run() na starcie i z send() po zerwaniu połączenia.
     def connect(self) -> None:
         """Keep trying until Central accepts us. Exits only if Central says this
         station doesn't exist (retrying would never help)."""
@@ -54,11 +67,15 @@ class CentralLink:
         if self.healthy:  # Central starts us as LEAK: tell it the engine is fine
             self._exchange(OpCode.RECOVERED)
 
+    # Wysyła "OP#ws_id" i czeka na odpowiedź Central. Wywołujący trzyma blokadę (send)
+    # albo działa, zanim wystartował drugi wątek (connect wołane z run()).
     def _exchange(self, op: OpCode) -> Message:
         assert self.sock is not None
         send(self.sock, Message(op, [self.ws_id]))
         return recv(self.sock)
 
+    # Bezpieczna wątkowo wymiana z Central. Przy błędzie połączenia zamyka gniazdo
+    # i łączy się ponownie (connect), co przy okazji odsyła aktualny stan zdrowia.
     def send(self, op: OpCode) -> None:
         """Send one message to Central; if the connection is broken, reconnect."""
         with self.lock:
@@ -73,10 +90,14 @@ class CentralLink:
             if reply.op != OpCode.OK:
                 print(f"[WM_WS_M] Central did not accept {op}: {reply.fields}")
 
+    # Zapamiętuje zdrowie silnika i zgłasza je Central: RECOVERED (zdrowy) albo LEAK.
+    # Wołana z update_health().
     def report_health(self, healthy: bool) -> None:
         self.healthy = healthy
         self.send(OpCode.RECOVERED if healthy else OpCode.LEAK)
 
+    # Wątek: co 2 s PING do Central. Dzięki temu Central wie, że monitor żyje (bez PING-ów
+    # po 6 s ustawiłby DISCONNECTED), a monitor szybko zauważa, że Central padł.
     def heartbeat_loop(self) -> None:
         """Runs in its own thread: PING Central every few seconds. This is how a dead
         Central is noticed quickly, even when the station has nothing to report."""
@@ -85,6 +106,8 @@ class CentralLink:
             self.send(OpCode.PING)
 
 
+# Jedno sprawdzenie zdrowia: HEALTH do silnika; True gdy odpowie OK, False gdy KO.
+# Brak odpowiedzi w 3 s -> TimeoutError (łapany w watch_engine).
 def check_engine(conn: socket.socket) -> bool:
     """Ask the engine "are you OK?". True if it answers OK, False if KO."""
     send(conn, Message(OpCode.HEALTH))
@@ -92,6 +115,8 @@ def check_engine(conn: socket.socket) -> bool:
     return reply.op == OpCode.OK
 
 
+# Reaguje tylko na ZMIANĘ zdrowia (old -> new), żeby nie zasypywać Central co sekundę
+# tą samą wiadomością. None = silnika jeszcze nie było. Zwraca nowy stan.
 def update_health(old: bool | None, new: bool, central: CentralLink) -> bool:
     """Act only when the health CHANGES. None = no engine seen yet."""
     if new and old is not True:  # first OK ever, or OK after a fault
@@ -103,6 +128,9 @@ def update_health(old: bool | None, new: bool, central: CentralLink) -> bool:
     return new
 
 
+# Obsługuje jedno połączenie silnika: wysyła IDENTIFY#<ws_id>#<lokalizacja> (silnik
+# dowiaduje się, kim jest), potem co 1 s check_engine + update_health. Gdy silnik się
+# rozłączy albo przestanie odpowiadać, zgłasza LEAK i zwraca ostatni stan zdrowia.
 def watch_engine(conn: socket.socket, healthy: bool | None, central: CentralLink) -> bool:
     """Tell the engine who it is, then health-check it every second
     until its connection breaks."""
@@ -119,6 +147,9 @@ def watch_engine(conn: socket.socket, healthy: bool | None, central: CentralLink
             return update_health(healthy, False, central)
 
 
+# Start monitora: argumenty (port dla silnika, adres Central, ID stacji), połączenie
+# z Central (czeka, aż Central wstanie), wątek heartbeat, potem serwer gniazd dla
+# silnika – obsługuje jeden naraz, a po jego utracie czeka na kolejny.
 def run() -> None:
     parser = argparse.ArgumentParser(prog="WM_WS_M")
     parser.add_argument("port", type=int, help="port of the socket server for WM_WS_E")
@@ -144,6 +175,7 @@ def run() -> None:
         healthy = watch_engine(conn, healthy, central)
 
 
+# Funkcja uruchamiana komendą WM_WS_M; Ctrl+C kończy program z komunikatem.
 def main() -> None:
     try:
         run()

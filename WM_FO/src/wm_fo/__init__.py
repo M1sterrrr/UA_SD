@@ -1,3 +1,7 @@
+# Aplikacja operatora polowego (WM_FO). Rozmawia WYŁĄCZNIE przez Kafkę: wysyła
+# IRRIGATION_REQUEST do wm.requests, czyta werdykty Central z wm.fo.notifications
+# i telemetrię stacji wprost z wm.ws.events (zostawia tylko wiadomości ze swoim
+# request_id). Tryby: interaktywny ("WS2 30", "list") albo z pliku z prośbami.
 import argparse
 import time
 
@@ -13,6 +17,8 @@ FILE_PAUSE = 4.0  # PDF: wait 4 s after a request concludes before the next one
 CATCH_UP_MAX = 5.0  # at most this long reading what we missed while we were down
 
 
+# Czeka max `seconds` s na następną wiadomość o NASZEJ prośbie (zgodne request_id);
+# cudze wiadomości pomija. Podstawa wait_for_verdict() i follow_irrigation().
 def next_for_request(consumer: Consumer, request_id: str, seconds: float) -> dict | None:
     """Wait up to `seconds` for the next message about OUR request.
     Every other operator's messages are skipped."""
@@ -24,6 +30,8 @@ def next_for_request(consumer: Consumer, request_id: str, seconds: float) -> dic
     return None
 
 
+# Wypisuje kolejne REQUEST_STATUS od Central (RECEIVED, potem AUTHORIZED albo DENIED
+# z powodem). True = zgoda. Brak odpowiedzi przez 10 s -> False (Central nie działa?).
 def wait_for_verdict(consumer: Consumer, request_id: str) -> bool:
     """Print status updates until AUTHORIZED or DENIED. True if authorized."""
     while msg := next_for_request(consumer, request_id, ANSWER_TIMEOUT):
@@ -37,6 +45,8 @@ def wait_for_verdict(consumer: Consumer, request_id: str) -> bool:
     return False
 
 
+# Po zgodzie wypisuje TELEMETRY ze stacji (co 1 s), aż przyjdzie FINISHED
+# z podsumowaniem. 5 s ciszy = stacja padła, przestajemy czekać.
 def follow_irrigation(consumer: Consumer, request_id: str) -> None:
     """Print the station's telemetry for our request until it FINISHES
     (or goes quiet, if the station died)."""
@@ -55,6 +65,8 @@ def follow_irrigation(consumer: Consumer, request_id: str) -> None:
     print(f"[WM_FO] {request_id}: no news from the station for {SILENCE_TIMEOUT:.0f} s")
 
 
+# Jedno podlewanie od początku do końca: nowe request_id -> publish IRRIGATION_REQUEST
+# -> wait_for_verdict -> (jeśli zgoda) follow_irrigation. Wołana z run_file i run_interactive.
 def run_request(producer: Producer, consumer: Consumer, operator_id: str,
                 ws_id: str, duration: int) -> None:
     """One irrigation from start to end: request, verdict, telemetry, summary."""
@@ -67,6 +79,9 @@ def run_request(producer: Producer, consumer: Consumer, operator_id: str,
         follow_irrigation(consumer, request_id)
 
 
+# Po restarcie FO: dzięki trwałej grupie konsumenta Kafka najpierw oddaje zaległe
+# wiadomości. Wypisuje wyniki naszych podlewań zakończonych w międzyczasie i dalej
+# śledzi te, które jeszcze trwają. Wołana raz, na starcie, w run().
 def catch_up(consumer: Consumer, operator_id: str) -> None:
     """After a restart Kafka first hands us everything we missed (our group remembers
     where we stopped reading). Show the results of our irrigations that finished
@@ -90,6 +105,8 @@ def catch_up(consumer: Consumer, operator_id: str) -> None:
         follow_irrigation(consumer, rid)
 
 
+# Czyta wiadomości przez ~3 s i zapamiętuje OSTATNIĄ listę STATIONS (Central rozsyła ją
+# co 2 s w broadcast_stations), potem wypisuje stacje i oznacza dostępne.
 def show_stations(consumer: Consumer) -> None:
     """Print the newest station list Central has broadcast."""
     stations = None
@@ -107,12 +124,15 @@ def show_stations(consumer: Consumer) -> None:
         print(f"[WM_FO]   {s['id']:<5} {s['state']:<15} {s['location']}{mark}")
 
 
+# "WS2 30" -> ("WS2", 30). Zły format -> ValueError (łapią go wywołujący).
 def parse_request(line: str) -> tuple[str, int]:
     """"WS2 30" -> ("WS2", 30). Raises ValueError if the line is malformed."""
     ws_id, seconds = line.split()
     return ws_id, int(seconds)
 
 
+# Tryb plikowy: każda linia "<ws_id> <sekundy>" to jedna prośba (puste linie i # pomijane).
+# Prośby idą po kolei przez run_request, z przerwą 4 s między nimi (wymóg z PDF).
 def run_file(path: str, producer: Producer, consumer: Consumer, operator_id: str) -> None:
     """Every line "<ws_id> <seconds>" is one request; blank lines and # comments skipped."""
     with open(path, encoding="utf-8") as f:
@@ -132,6 +152,7 @@ def run_file(path: str, producer: Producer, consumer: Consumer, operator_id: str
     print("[WM_FO] all requests from the file done")
 
 
+# Tryb interaktywny: "WS2 30" = prośba, "list" = lista stacji, pusta linia = koniec.
 def run_interactive(producer: Producer, consumer: Consumer, operator_id: str) -> None:
     print("[WM_FO] type: <ws_id> <seconds> (e.g. WS2 30), list, or an empty line to quit")
     while line := input("[WM_FO] > ").strip():
@@ -146,6 +167,9 @@ def run_interactive(producer: Producer, consumer: Consumer, operator_id: str) ->
         run_request(producer, consumer, operator_id, ws_id, duration)
 
 
+# Start FO: argumenty (broker, ID operatora, opcjonalny plik), producent, TRWAŁY
+# konsument "fo-<ID>" na wm.fo.notifications + wm.ws.events, potem catch_up,
+# lista stacji i tryb plikowy albo interaktywny. Na końcu zamyka konsumenta.
 def run() -> None:
     parser = argparse.ArgumentParser(prog="WM_FO")
     parser.add_argument("broker", type=host_port, help="Kafka bootstrap server HOST:PORT")
@@ -172,6 +196,7 @@ def run() -> None:
         consumer.close()
 
 
+# Funkcja uruchamiana komendą WM_FO; Ctrl+C kończy program bez śladu stosu (traceback).
 def main() -> None:
     try:
         run()

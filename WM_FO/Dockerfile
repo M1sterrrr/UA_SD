@@ -1,3 +1,6 @@
+# Obraz Dockera dla WM_FO (operatora). Ten sam schemat co WM_Central: kopiujemy cały workspace,
+# instalujemy tylko ten pakiet (uv sync --package) i ustawiamy jego komendę jako ENTRYPOINT.
+# W docker-compose usługa "fo", uruchamiana ręcznie: docker compose run --rm fo
 # Build from the repo root:  docker build -f WM_FO/Dockerfile -t wm-fo .
 FROM python:3.12-slim
 COPY --from=ghcr.io/astral-sh/uv:0.12.23 /uv /bin/uv

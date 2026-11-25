@@ -1,3 +1,4 @@
+# Pliki pomijane przy budowaniu obrazów Dockera (kontekst budowania = całe repo).
 # Files that are never copied into an image (the build context is the repo root)
 .git/
 .venv/

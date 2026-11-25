@@ -1,3 +1,7 @@
+# Punkt wejścia aplikacji WM_Central (komenda WM_Central z pyproject.toml).
+# Central to "mózg" systemu: zna stacje i operatorów (SQLite), przyjmuje monitory przez
+# gniazda, autoryzuje prośby o podlewanie przez Kafkę, pokazuje dashboard WWW
+# i przyjmuje komendy administratora. Ten plik tylko wszystko uruchamia.
 import argparse
 import os
 import threading
@@ -8,6 +12,14 @@ from wm_common import kafka_msgs as km
 from wm_common.cli import host_port
 
 
+# Start Central: 1) argumenty (albo zmienne środowiskowe WM_SOCKET_PORT, WM_KAFKA,
+# PORT – tak konfiguruje kontener AWS ECS), 2) baza – wypełniana przykładami (seed),
+# jeśli jest pusta, 3) wspólna tabela stacji StationTable (wszystkie DISCONNECTED),
+# 4) jeden producent Kafki dla całego programu, 5) 4 wątki w tle:
+# kafka_handler.consume (prośby + telemetria), kafka_handler.broadcast_stations (lista
+# stacji co 2 s), admin.console (komendy z klawiatury), dashboard.serve (strona WWW).
+# Wątek główny obsługuje serwer gniazd dla monitorów (server.serve).
+# daemon=True: wątki w tle kończą się razem z programem.
 def run() -> None:
     parser = argparse.ArgumentParser(prog="WM_Central")
     # Both may also come from the environment: AWS ECS starts the container with
@@ -56,6 +68,8 @@ def run() -> None:
     server.serve(args.port, table, producer)
 
 
+# Funkcja uruchamiana komendą WM_Central. Ctrl+C (albo `docker stop`, który wysyła
+# SIGINT – patrz Dockerfile) kończy program krótkim komunikatem zamiast błędu.
 def main() -> None:
     try:
         run()

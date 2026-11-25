@@ -31,3 +31,7 @@ Prompt: if kafka isnt up when central starts, central keeps running but doesnt a
 Prompt: the correction guide says FO should see its results after a restart. how do i do that
 Prompt: im preparing for the exam. explain one full irrigation from start to end, what goes over sockets and what over kafka. then ask me questions like what happens if the monitor dies and correct me
 Prompt: go through the whole repo and add polish comments to every function, what it does and how it connects to the rest
+
+-==-
+
+add a short comment before every module, method and at the top of each file explaining exactly what it does and how
